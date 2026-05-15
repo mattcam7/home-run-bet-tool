@@ -79,6 +79,36 @@ def fetch_odds(api_key: str, now: datetime) -> list:
     return result
 
 
+def fetch_player_teams() -> dict:
+    """Returns {normalized_player_name: team_abbreviation} via MLB Stats API.
+
+    Two calls: teams (id→abbrev) then players (name→team_id). Name matching
+    is string-based — a known limitation since OddsAPI exposes no numeric
+    player IDs for props markets. Mismatches result in an empty team string.
+    """
+    teams_resp = requests.get(
+        "https://statsapi.mlb.com/api/v1/teams",
+        params={"sportId": 1, "season": datetime.now(timezone.utc).year},
+        timeout=15,
+    )
+    teams_resp.raise_for_status()
+    team_abbrev = {t["id"]: t["abbreviation"] for t in teams_resp.json().get("teams", [])}
+
+    players_resp = requests.get(
+        "https://statsapi.mlb.com/api/v1/sports/1/players",
+        params={"season": datetime.now(timezone.utc).year, "gameType": "R"},
+        timeout=15,
+    )
+    players_resp.raise_for_status()
+    result = {}
+    for player in players_resp.json().get("people", []):
+        name = player["fullName"].strip().title()
+        team_id = player.get("currentTeam", {}).get("id")
+        if team_id and team_id in team_abbrev:
+            result[name] = team_abbrev[team_id]
+    return result
+
+
 def main() -> None:
     load_dotenv()
     api_key = os.environ["ODDS_API_KEY"]
@@ -86,6 +116,9 @@ def main() -> None:
 
     print("Fetching odds from OddsAPI...")
     raw = fetch_odds(api_key, now)
+
+    print("Fetching player team data...")
+    player_teams = fetch_player_teams()
 
     print("Extracting retail odds...")
     retail_df = extract_retail_odds(raw, now)
@@ -95,6 +128,7 @@ def main() -> None:
 
     print("Calculating EV...")
     final_df = calculate_ev(retail_df, pinnacle_df)
+    final_df["team"] = final_df["player_name"].map(player_teams).fillna("")
 
     n_players = len(final_df)
     n_positive = int((final_df["ev_pct"] > 0).sum())

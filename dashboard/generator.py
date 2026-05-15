@@ -10,7 +10,7 @@ import pandas as pd
 ET = ZoneInfo("America/New_York")
 
 META_COLS = {
-    "player_name", "game", "commence_time",
+    "player_name", "team", "game", "commence_time",
     "pinnacle_odds", "pinnacle_prob",
     "best_retail_odds", "best_retail_decimal",
     "ev_pct", "composite_score", "composite_z",
@@ -53,7 +53,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     <thead><tr>
       <th></th>
       <th onclick="sortBy('player')">Player</th>
-      <th onclick="sortBy('game')">Game</th>
+      <th onclick="sortBy('team')">Team</th>
       <th onclick="sortBy('time_sort')">Time (ET)</th>
       <th onclick="sortBy('pinnacle_pct')">Pin %</th>
       __BOOK_HEADERS__
@@ -95,7 +95,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       document.getElementById('table-body').innerHTML=sorted.map(r=>`
         <tr class="${rowCls(r)}${r.ev_pct<minEv?' hidden':''}">
           <td><input type="checkbox" ${legs[r.player+'|'+r.game]?'checked':''} onchange="toggleLeg('${r.player}','${r.game}',this)"></td>
-          <td>${r.player}</td><td>${r.game}</td><td>${r.time}</td>
+          <td>${r.player}</td><td>${r.team}</td><td>${r.time}</td>
           <td>${r.pinnacle_pct.toFixed(1)}%</td>
           ${BOOKS.map(b=>fmtBook(r[b])).join('')}
           <td>${fmtOdds(r.best_retail_odds)}</td>
@@ -154,7 +154,7 @@ def generate_dashboard(
     for _, row in final_df.iterrows():
         record = {
             "player": row["player_name"],
-            "game": row["game"],
+            "team": row.get("team", ""),
             "time": row["commence_time"].astimezone(ET).strftime("%I:%M %p ET"),
             "time_sort": row["commence_time"].timestamp(),
             "pinnacle_pct": round(row["pinnacle_prob"] * 100, 2),
