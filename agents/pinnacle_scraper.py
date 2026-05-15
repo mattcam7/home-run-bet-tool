@@ -17,9 +17,11 @@ def extract_pinnacle_odds(raw_payload: list, now: datetime) -> pd.DataFrame:
                 if market["key"] != "batter_home_runs":
                     continue
                 for outcome in market["outcomes"]:
+                    if outcome.get("name") != "Over" or outcome.get("point") != 0.5:
+                        continue
                     american_odds = outcome["price"]
                     rows.append({
-                        "player_name": outcome["name"].strip().title(),
+                        "player_name": outcome["description"].strip().title(),
                         "game": game,
                         "commence_time": commence_time,
                         "pinnacle_odds": american_odds,

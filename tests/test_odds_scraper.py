@@ -17,7 +17,7 @@ def test_returns_expected_columns():
 
 def test_normalizes_player_names():
     modified = copy.deepcopy(FIXTURE_PAYLOAD)
-    modified[0]["bookmakers"][0]["markets"][0]["outcomes"][0]["name"] = "aaron judge"
+    modified[0]["bookmakers"][0]["markets"][0]["outcomes"][0]["description"] = "aaron judge"
     df = extract_retail_odds(modified, FIXTURE_NOW)
     assert "Aaron Judge" in df["player_name"].values
 
