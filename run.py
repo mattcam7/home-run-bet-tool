@@ -10,8 +10,57 @@ from agents.pinnacle_scraper import extract_pinnacle_odds
 from dashboard.generator import generate_dashboard
 
 
+def fetch_event_odds(api_key: str, event_id: str) -> dict:
+    """Fetch batter_home_runs from both standard and alternate markets and merge.
+
+    Sharp books (Pinnacle, BetOnline, Caesars) use 'batter_home_runs'.
+    US retail books (DraftKings, FanDuel, BetMGM) use 'batter_home_runs_alternate'.
+    Both are fetched and merged into one event object so the scrapers see all books.
+    """
+    std_resp = requests.get(
+        f"https://api.the-odds-api.com/v4/sports/baseball_mlb/events/{event_id}/odds",
+        params={
+            "apiKey": api_key,
+            "regions": "us,us2,eu",
+            "markets": "batter_home_runs",
+            "oddsFormat": "american",
+        },
+        timeout=15,
+    )
+    alt_resp = requests.get(
+        f"https://api.the-odds-api.com/v4/sports/baseball_mlb/events/{event_id}/odds",
+        params={
+            "apiKey": api_key,
+            "regions": "us,us2",
+            "markets": "batter_home_runs_alternate",
+            "oddsFormat": "american",
+        },
+        timeout=15,
+    )
+    std_resp.raise_for_status()
+    alt_resp.raise_for_status()
+
+    std_data = std_resp.json()
+    alt_data = alt_resp.json()
+
+    # Merge: standard books take priority; add alternate books not already present.
+    # Normalize alternate market key so scrapers treat it identically.
+    std_book_keys = {bk["key"] for bk in std_data.get("bookmakers", [])}
+    merged = list(std_data.get("bookmakers", []))
+    for bk in alt_data.get("bookmakers", []):
+        if bk["key"] in std_book_keys:
+            continue
+        for market in bk["markets"]:
+            if market["key"] == "batter_home_runs_alternate":
+                market["key"] = "batter_home_runs"
+        merged.append(bk)
+
+    std_data["bookmakers"] = merged
+    return std_data
+
+
 def fetch_odds(api_key: str, now: datetime) -> list:
-    # Step 1: get event list (h2h is cheapest market, gives us IDs + commence times)
+    # Step 1: lightweight h2h call to get event list and filter to unplayed games
     resp = requests.get(
         "https://api.the-odds-api.com/v4/sports/baseball_mlb/odds",
         params={"apiKey": api_key, "regions": "us", "markets": "h2h", "oddsFormat": "american"},
@@ -20,19 +69,13 @@ def fetch_odds(api_key: str, now: datetime) -> list:
     resp.raise_for_status()
     events = resp.json()
 
-    # Step 2: per-event batter_home_runs fetch (player props not available on bulk endpoint)
+    # Step 2: per-event dual-market fetch (player props not available on bulk endpoint)
     result = []
     for event in events:
         commence_time = datetime.fromisoformat(event["commence_time"].replace("Z", "+00:00"))
         if commence_time <= now:
             continue
-        props_resp = requests.get(
-            f"https://api.the-odds-api.com/v4/sports/baseball_mlb/events/{event['id']}/odds",
-            params={"apiKey": api_key, "regions": "us,eu", "markets": "batter_home_runs", "oddsFormat": "american"},
-            timeout=15,
-        )
-        props_resp.raise_for_status()
-        result.append(props_resp.json())
+        result.append(fetch_event_odds(api_key, event["id"]))
     return result
 
 

@@ -30,6 +30,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     th{background:#343a40;color:#fff;padding:10px 8px;cursor:pointer;text-align:left;white-space:nowrap;user-select:none}
     th:hover{background:#495057}
     td{padding:8px;border-bottom:1px solid #dee2e6;white-space:nowrap}
+    .odds-pct{display:block;font-size:.78em;color:#888;line-height:1.1}
     tr.positive-ev{background:#d4edda}
     tr.strong-play{background:#28a745!important;color:#fff;font-weight:700}
     tr.negative-ev td{color:#aaa}
@@ -75,6 +76,8 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     function fmtOdds(v){return v==null?'--':v>0?'+'+v:''+v}
     function fmtPct(v){return(v>=0?'+':'')+v.toFixed(2)+'%'}
     function fmtZ(v){return(v>=0?'+':'')+v.toFixed(2)}
+    function impliedPct(v){if(v==null)return'--';const d=v>0?(v/100)+1:(100/Math.abs(v))+1;return(100/d).toFixed(1)+'%'}
+    function fmtBook(v){if(v==null)return'<td>--</td>';return`<td>${fmtOdds(v)}<span class="odds-pct">${impliedPct(v)}</span></td>`}
     function rowCls(r){
       if(r.composite_z>=1.5)return 'strong-play';
       if(r.ev_pct>0)return 'positive-ev';
@@ -94,7 +97,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
           <td><input type="checkbox" ${legs[r.player+'|'+r.game]?'checked':''} onchange="toggleLeg('${r.player}','${r.game}',this)"></td>
           <td>${r.player}</td><td>${r.game}</td><td>${r.time}</td>
           <td>${r.pinnacle_pct.toFixed(1)}%</td>
-          ${BOOKS.map(b=>`<td>${fmtOdds(r[b])}</td>`).join('')}
+          ${BOOKS.map(b=>fmtBook(r[b])).join('')}
           <td>${fmtOdds(r.best_retail_odds)}</td>
           <td>${fmtPct(r.ev_pct)}</td>
           <td>${fmtZ(r.composite_z)}</td>
