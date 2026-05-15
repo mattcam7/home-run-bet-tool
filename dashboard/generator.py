@@ -84,7 +84,10 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       const sorted=[...DATA].sort((a,b)=>{
         const av=a[sortKey],bv=b[sortKey];
         if(typeof av==='string')return sortDir*av.localeCompare(bv);
-        return sortDir*((av??-Infinity)-(bv??-Infinity));
+        if(av==null&&bv==null)return 0;
+        if(av==null)return 1;
+        if(bv==null)return -1;
+        return sortDir*(av-bv);
       });
       document.getElementById('table-body').innerHTML=sorted.map(r=>`
         <tr class="${rowCls(r)}${r.ev_pct<minEv?' hidden':''}">
