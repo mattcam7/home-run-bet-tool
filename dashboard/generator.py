@@ -30,7 +30,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     th{background:#343a40;color:#fff;padding:10px 8px;cursor:pointer;text-align:left;white-space:nowrap;user-select:none}
     th:hover{background:#495057}
     td{padding:8px;border-bottom:1px solid #dee2e6;white-space:nowrap}
-    .odds-pct{display:block;font-size:.78em;color:#888;line-height:1.1}
+    .odds-pct{display:block;font-size:.78em;color:#c0392b;line-height:1.1}
     tr.positive-ev{background:#d4edda}
     tr.strong-play{background:#28a745!important;color:#fff;font-weight:700}
     tr.negative-ev td{color:#aaa}

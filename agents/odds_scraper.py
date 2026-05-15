@@ -2,6 +2,8 @@ import pandas as pd
 from datetime import datetime
 from agents.utils import american_to_decimal
 
+RETAIL_BOOKS = {"draftkings", "betmgm", "fanduel", "williamhill_us", "fanatics"}
+
 def extract_retail_odds(raw_payload: list, now: datetime) -> pd.DataFrame:
     rows = []
     for event in raw_payload:
@@ -10,7 +12,7 @@ def extract_retail_odds(raw_payload: list, now: datetime) -> pd.DataFrame:
             continue
         game = f"{event['away_team']} @ {event['home_team']}"
         for bookmaker in event["bookmakers"]:
-            if bookmaker["key"] == "pinnacle":
+            if bookmaker["key"] not in RETAIL_BOOKS:
                 continue
             for market in bookmaker["markets"]:
                 if market["key"] != "batter_home_runs":
