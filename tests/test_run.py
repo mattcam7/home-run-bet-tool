@@ -80,5 +80,17 @@ def test_fetch_odds_skips_started_games(monkeypatch):
 def test_main_runs_full_pipeline(monkeypatch):
     monkeypatch.setenv("ODDS_API_KEY", "test_key")
     monkeypatch.setattr("run.fetch_odds", lambda key, now: FIXTURE_PAYLOAD)
+    monkeypatch.setattr("run.fetch_player_teams", lambda: {})
+    monkeypatch.setattr("run.log_open_plays", lambda df, **kwargs: None)
     monkeypatch.setattr("run.generate_dashboard", lambda df, **kwargs: None)
+
+    # Freeze "now" to the fixture epoch so game1 stays unplayed regardless of
+    # the real wall-clock date — otherwise the fixture's fixed 2026-05-15
+    # games age out and the pipeline gets an empty retail frame.
+    class _FrozenDT(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return FIXTURE_NOW
+
+    monkeypatch.setattr("run.datetime", _FrozenDT)
     main()  # should not raise

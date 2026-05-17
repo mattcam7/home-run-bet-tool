@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 import requests
 from dotenv import load_dotenv
 
+from agents.clv_log import log_open_plays
 from agents.ev_calculator import calculate_ev
 from agents.odds_scraper import extract_retail_odds
 from agents.pinnacle_scraper import extract_pinnacle_odds
@@ -133,6 +134,9 @@ def main() -> None:
     n_players = len(final_df)
     n_positive = int((final_df["ev_pct"] > 0).sum())
     print(f"Found {n_players} players | {n_positive} +EV plays")
+
+    log_open_plays(final_df, now=now)
+    print("Logged open plays to CLV log.")
 
     generate_dashboard(final_df)
     print("Dashboard opened in browser.")

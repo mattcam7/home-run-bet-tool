@@ -39,17 +39,23 @@ def calculate_ev(retail_df: pd.DataFrame, pinnacle_df: pd.DataFrame) -> pd.DataF
 
     def _best_retail(row):
         """Find the bookmaker with the highest decimal odds (best payout) for this player."""
-        best_dec, best_odds = -float("inf"), None
+        best_dec, best_odds, best_book = -float("inf"), None, None
         for col in book_cols:
             val = row[col]
             if pd.isna(val):
                 continue
             dec = american_to_decimal(int(val))
             if dec > best_dec:
-                best_dec, best_odds = dec, int(val)
-        return pd.Series({"best_retail_odds": best_odds, "best_retail_decimal": best_dec})
+                best_dec, best_odds, best_book = dec, int(val), col
+        return pd.Series({
+            "best_retail_odds": best_odds,
+            "best_retail_decimal": best_dec,
+            "best_retail_book": best_book,
+        })
 
-    merged[["best_retail_odds", "best_retail_decimal"]] = merged.apply(_best_retail, axis=1)
+    merged[["best_retail_odds", "best_retail_decimal", "best_retail_book"]] = merged.apply(
+        _best_retail, axis=1
+    )
 
     # EV formula: (pinnacle_prob × best_retail_decimal) - 1
     merged["ev_pct"] = (merged["pinnacle_prob"] * merged["best_retail_decimal"]) - 1
@@ -61,5 +67,17 @@ def calculate_ev(retail_df: pd.DataFrame, pinnacle_df: pd.DataFrame) -> pd.DataF
     mean_c = merged["composite_score"].mean()
     std_c = merged["composite_score"].std(ddof=0)
     merged["composite_z"] = (merged["composite_score"] - mean_c) / std_c
+
+    # Quarter-Kelly stake sizing. Kelly fraction f* = (b*p - q) / b, where
+    # b = net decimal odds, p = Pinnacle no-vig prob, q = 1 - p. We bet a
+    # quarter of f* (standard sharp discipline — HR props are noisy), express
+    # it in units under the 1u = 1% of bankroll convention (so units =
+    # fraction * 100), round to 0.5u, floor at 0, and cap at 3u. 1u = $25.
+    b = merged["best_retail_decimal"] - 1
+    p = merged["pinnacle_prob"]
+    f_star = ((b * p) - (1 - p)) / b
+    quarter_units = (f_star / 4).clip(lower=0) * 100
+    merged["kelly_units"] = ((quarter_units * 2).round() / 2).clip(upper=3.0)
+    merged["stake_usd"] = merged["kelly_units"] * 25
 
     return merged.sort_values("composite_z", ascending=False).reset_index(drop=True)

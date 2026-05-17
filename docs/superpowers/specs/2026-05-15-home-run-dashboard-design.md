@@ -1,0 +1,211 @@
+# Home Run Dashboard — Design Spec
+**Date:** 2026-05-15  
+**Status:** Approved
+
+---
+
+## Overview
+
+A locally-run Python pipeline that fetches today's MLB home run prop odds from the OddsAPI, compares retail sportsbook odds against Pinnacle's sharper lines to identify positive expected value (+EV) plays, and renders an interactive HTML dashboard in the browser. A manual parlay builder is embedded in the dashboard for live combined-leg calculations.
+
+Triggered by typing `run hr dashboard` in this Claude Code chat session.
+
+---
+
+## File Structure
+
+```
+home_run_bet_tool/
+├── .env                      # ODDS_API_KEY=... (never committed)
+├── .env.example              # safe reference template
+├── run.py                    # Orchestrator — pipeline entry point
+├── agents/
+│   ├── __init__.py
+│   ├── odds_scraper.py       # Agent 1: retail HR odds (all books)
+│   ├── pinnacle_scraper.py   # Agent 2: Pinnacle HR odds
+│   └── ev_calculator.py     # Agent 3: merge, EV%, composite z-score
+├── dashboard/
+│   └── generator.py          # Builds hr_dashboard.html, opens browser
+├── requirements.txt
+├── docs/
+│   └── superpowers/specs/
+│       └── 2026-05-15-home-run-dashboard-design.md
+├── CLAUDE.md
+└── AGENTS.md
+```
+
+---
+
+## Data Flow
+
+```
+OddsAPI — one request (all bookmakers, baseball_mlb, batter_home_runs)
+        │
+        ├─→ odds_scraper.py      → retail_df
+        └─→ pinnacle_scraper.py  → pinnacle_df
+                      │
+                      └─→ ev_calculator.py  → final_df
+                                    │
+                                    └─→ dashboard/generator.py → hr_dashboard.html → browser
+```
+
+One API call fetches all bookmakers. Both agents receive the same raw payload and filter independently — Pinnacle is split out client-side to avoid burning two API credits.
+
+---
+
+## Agent Specifications
+
+### Agent 1 — `odds_scraper.py`
+
+Filters the raw OddsAPI payload to all bookmakers **except Pinnacle**. Returns one row per player per book for today's unplayed games only (`commence_time > now()`).
+
+**Output — `retail_df`:**
+
+| Column | Type | Notes |
+|---|---|---|
+| player_name | str | Normalized: stripped, title-cased |
+| game | str | "AWAY @ HOME" |
+| commence_time | datetime | UTC, converted to ET for display |
+| bookmaker | str | e.g. "DraftKings", "FanDuel" |
+| american_odds | int | e.g. +450 |
+| implied_prob | float | 1 / decimal_odds |
+
+### Agent 2 — `pinnacle_scraper.py`
+
+Filters the same raw payload to Pinnacle only. Returns one row per player.
+
+**Output — `pinnacle_df`:**
+
+| Column | Type | Notes |
+|---|---|---|
+| player_name | str | Same normalization as Agent 1 |
+| game | str | |
+| commence_time | datetime | |
+| pinnacle_odds | int | American odds |
+| pinnacle_prob | float | 1 / decimal_odds |
+
+**Name-matching note:** OddsAPI uses player name strings for props markets — numeric IDs are not exposed. Since both agents source from the same API response, names are consistent within a session. Normalization (strip + title-case) is applied as a guard. This is a known limitation; if name mismatches emerge they must be investigated rather than silently dropped.
+
+### Agent 3 — `ev_calculator.py`
+
+Merges `retail_df` and `pinnacle_df` on `player_name` + `game`. Players not available at Pinnacle are excluded entirely. Pivots retail books into columns, computes EV and composite z-score.
+
+**Output — `final_df` (one row per player):**
+
+| Column | Type | Notes |
+|---|---|---|
+| player_name | str | |
+| game | str | |
+| commence_time | datetime | |
+| pinnacle_prob | float | Pinnacle implied probability |
+| {BookmakerName} | int | American odds per retail book (dynamic columns) |
+| best_retail_odds | int | American odds of the book with the highest decimal equivalent (best payout) |
+| best_retail_decimal | float | Decimal conversion of best_retail_odds |
+| ev_pct | float | EV% — see formula below |
+| composite_score | float | ev_pct × pinnacle_prob |
+| composite_z | float | Z-scored composite across today's full player pool |
+
+---
+
+## EV & Scoring Formulas
+
+**American → Decimal conversion:**
+```
+if odds > 0:  decimal = (odds / 100) + 1
+if odds < 0:  decimal = (100 / abs(odds)) + 1
+```
+
+**Implied probability:**
+```
+implied_prob = 1 / decimal_odds
+```
+
+**EV%:**
+```
+ev_pct = (pinnacle_prob × best_retail_decimal) - 1
+```
+
+**Composite score:**
+```
+composite_score = ev_pct × pinnacle_prob
+```
+Weights EV by how likely the event is — prevents low-probability flukes from dominating the ranking.
+
+**Composite z-score:**
+```
+composite_z = (composite_score - mean(all composite_scores)) / std(all composite_scores)
+```
+Normalized across today's full player pool. A z-score of +2.0 means the play is 2 standard deviations above today's average quality. No edge-case guard for small n — MLB prop markets reliably produce 15+ player lines even on single-game days.
+
+---
+
+## HTML Dashboard
+
+Static HTML file generated by `dashboard/generator.py` and opened via `webbrowser.open()`. No server required. All interactivity is vanilla JS embedded in the file.
+
+### Panel 1 — Player Table
+
+- Columns: Checkbox | Player | Game | Time | Pinnacle % | {all retail book columns} | Best Retail | EV% | Composite Z
+- Default sort: Composite Z descending
+- Row styling:
+  - EV% > 0: green row
+  - EV% ≤ 0: greyed out (shown but de-emphasized — full market visibility)
+  - Composite Z ≥ +1.5: bold + green highlight
+- Filter control: min EV% slider at top of table
+
+### Panel 2 — Parlay Builder
+
+Updates live as checkboxes are selected in Panel 1.
+
+Displayed fields:
+- Selected player list with their best retail book + odds
+- Combined probability (product of all selected `pinnacle_prob` values)
+- Combined parlay odds (product of all selected `best_retail_decimal` values → converted back to American)
+- Combined EV%
+- Composite Z (scored against single-player composite pool for reference)
+
+**Parlay formulas:**
+```
+parlay_prob    = ∏ pinnacle_prob (all selected legs)
+parlay_decimal = ∏ best_retail_decimal (all selected legs)
+parlay_ev_pct  = (parlay_prob × parlay_decimal) - 1
+parlay_composite = parlay_ev_pct × parlay_prob
+parlay_z       = (parlay_composite - mean(single_composites)) / std(single_composites)
+```
+
+---
+
+## Orchestrator — `run.py`
+
+Execution sequence:
+1. Load `ODDS_API_KEY` from `.env`
+2. Fetch raw OddsAPI payload: sport=`baseball_mlb`, market=`batter_home_runs`, all bookmakers
+3. Pass payload to `odds_scraper.py` → `retail_df`
+4. Pass payload to `pinnacle_scraper.py` → `pinnacle_df`
+5. Pass both DataFrames to `ev_calculator.py` → `final_df`
+6. Pass `final_df` to `dashboard/generator.py` → write `hr_dashboard.html`, open browser
+7. Print terminal summary: player count, +EV count, timestamp
+
+---
+
+## Dependencies
+
+```
+requests
+pandas
+python-dotenv
+```
+
+---
+
+## Trigger
+
+Keyphrase `run the hr dashboard` typed in this Claude Code chat session causes Claude to execute `python run.py` from the repo root. This is documented in CLAUDE.md so it persists across sessions.
+
+---
+
+## Security
+
+- `ODDS_API_KEY` lives in `.env`, which is git-ignored
+- `.env.example` contains the key name only: `ODDS_API_KEY=your_key_here`
+- The key must be removed from `AGENTS.md` and replaced with `$ODDS_API_KEY`

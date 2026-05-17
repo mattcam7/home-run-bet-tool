@@ -12,8 +12,9 @@ ET = ZoneInfo("America/New_York")
 META_COLS = {
     "player_name", "team", "game", "commence_time",
     "pinnacle_odds", "pinnacle_prob",
-    "best_retail_odds", "best_retail_decimal",
+    "best_retail_odds", "best_retail_decimal", "best_retail_book",
     "ev_pct", "composite_score", "composite_z",
+    "kelly_units", "stake_usd",
 }
 
 HTML_TEMPLATE = """<!DOCTYPE html>
@@ -59,6 +60,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       __BOOK_HEADERS__
       <th onclick="sortBy('best_retail_odds')">Best Retail</th>
       <th onclick="sortBy('ev_pct')">EV%</th>
+      <th onclick="sortBy('stake_units')">Stake</th>
       <th onclick="sortBy('composite_z')">Composite Z</th>
     </tr></thead>
     <tbody id="table-body"></tbody>
@@ -100,6 +102,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
           ${BOOKS.map(b=>fmtBook(r[b])).join('')}
           <td>${fmtOdds(r.best_retail_odds)}</td>
           <td>${fmtPct(r.ev_pct)}</td>
+          <td>${r.stake}</td>
           <td>${fmtZ(r.composite_z)}</td>
         </tr>`).join('');
     }
@@ -130,7 +133,15 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       const mean=comps.reduce((a,b)=>a+b,0)/comps.length;
       const std=Math.sqrt(comps.map(x=>(x-mean)**2).reduce((a,b)=>a+b,0)/comps.length);
       const pZ=std>0?fmtZ((pComp-mean)/std):'--';
-      statsDiv.innerHTML=`
+      const gameCounts={};
+      sel.forEach(l=>{if(l.game)gameCounts[l.game]=(gameCounts[l.game]||0)+1});
+      const dupGames=Object.entries(gameCounts).filter(e=>e[1]>=2);
+      let warn='';
+      if(dupGames.length){
+        const desc=dupGames.map(e=>`${e[1]} legs in ${e[0]}`).join('; ');
+        warn=`<div style="background:#fff3cd;border:1px solid #ffc107;padding:8px 10px;border-radius:4px;margin-bottom:8px;color:#856404"><strong>&#9888; Same-game correlation:</strong> ${desc}. HR outcomes within one game are correlated; the combined probability and EV below assume independence and understate the true risk on these legs.</div>`;
+      }
+      statsDiv.innerHTML=warn+`
         <div><span class="stat-label">Legs:</span> ${sel.length}</div>
         <div><span class="stat-label">Combined Probability:</span> ${(pProb*100).toFixed(2)}%</div>
         <div><span class="stat-label">Combined Odds:</span> ${decimalToAmerican(pDec)}</div>
@@ -155,11 +166,17 @@ def generate_dashboard(
         record = {
             "player": row["player_name"],
             "team": row.get("team", ""),
+            "game": row.get("game", ""),
             "time": row["commence_time"].astimezone(ET).strftime("%I:%M %p ET"),
             "time_sort": row["commence_time"].timestamp(),
             "pinnacle_pct": round(row["pinnacle_prob"] * 100, 2),
             "best_retail_odds": int(row["best_retail_odds"]),
             "ev_pct": round(row["ev_pct"] * 100, 2),
+            "stake_units": round(row["kelly_units"], 1),
+            "stake": (
+                f'{row["kelly_units"]:g}u (${row["stake_usd"]:,.0f})'
+                if row["kelly_units"] > 0 else "0u"
+            ),
             "composite_z": round(row["composite_z"], 2),
         }
         for col in book_cols:

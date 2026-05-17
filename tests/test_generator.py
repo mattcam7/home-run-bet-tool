@@ -19,6 +19,7 @@ def sample_df():
             "ev_pct": (1/4.8 * 5.5) - 1,
             "composite_score": ((1/4.8 * 5.5) - 1) * (1/4.8),
             "composite_z": 1.0,
+            "kelly_units": 1.0, "stake_usd": 25.0,
         },
         {
             "player_name": "Rafael Devers", "game": GAME, "commence_time": COMMENCE,
@@ -28,6 +29,7 @@ def sample_df():
             "ev_pct": (1/6.2 * 7.0) - 1,
             "composite_score": ((1/6.2 * 7.0) - 1) * (1/6.2),
             "composite_z": -1.0,
+            "kelly_units": 0.0, "stake_usd": 0.0,
         },
     ])
 

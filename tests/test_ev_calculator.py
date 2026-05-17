@@ -41,6 +41,11 @@ def test_best_retail_selects_highest_decimal():
     judge = df[df["player_name"] == "Aaron Judge"].iloc[0]
     assert judge["best_retail_odds"] == 450  # DK +450 beats FD +420
 
+def test_best_retail_book_is_tracked():
+    df = calculate_ev(RETAIL_DF, PINNACLE_DF)
+    judge = df[df["player_name"] == "Aaron Judge"].iloc[0]
+    assert judge["best_retail_book"] == "DraftKings"
+
 def test_composite_score():
     df = calculate_ev(RETAIL_DF, PINNACLE_DF)
     judge = df[df["player_name"] == "Aaron Judge"].iloc[0]
@@ -53,3 +58,19 @@ def test_composite_z_mean_is_zero():
 def test_sorted_by_composite_z_descending():
     df = calculate_ev(RETAIL_DF, PINNACLE_DF)
     assert df["composite_z"].iloc[0] >= df["composite_z"].iloc[-1]
+
+def test_quarter_kelly_units_and_stake():
+    df = calculate_ev(RETAIL_DF, PINNACLE_DF)
+    judge = df[df["player_name"] == "Aaron Judge"].iloc[0]
+    # best retail +450 -> dec 5.5 -> b=4.5 ; p=1/4.8 (Pinnacle no-vig)
+    b = 5.5 - 1
+    p = 1 / 4.8
+    f_star = (b * p - (1 - p)) / b
+    expected_units = round(max(f_star / 4, 0) * 100 * 2) / 2
+    assert abs(judge["kelly_units"] - expected_units) < 1e-9
+    assert abs(judge["stake_usd"] - expected_units * 25) < 1e-9
+
+def test_kelly_units_capped_at_3_and_floored_at_0():
+    df = calculate_ev(RETAIL_DF, PINNACLE_DF)
+    assert (df["kelly_units"] >= 0).all()
+    assert (df["kelly_units"] <= 3.0).all()

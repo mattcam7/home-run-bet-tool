@@ -41,5 +41,12 @@ AGENT 3 - EV Agent
 **Outputs:** All finalized data merged into a single dataframe, including the ev we gain (Pinnacle odds are sharper so if a player has better odds at pinnacle then retail this would be positive expected value)
 **Notes:** We should show all ev calculations but also account for players who have high ev solely based on lower odds.  EX - A player who is showing a 5% chance at pinnacle but a 1% chance at retail is true 4% EV but it's still an extremely low likelihood event.  There is likely more value in a player with 18% at pinnacle but 16% at retail.  Technically lower EV but much more likely to hit.
 
+AGENT 4 - Audit Agent
+**Purpose:** To run through the current version of our project and audit any key dependencies missing and how it can be improved through the lens of an expert sports bettor.
+**Schedule:** When invoked but if we could run this on a daily basis for continual improvement and performance tracking that would be optimal.
+**Inputs:** The audit agent should use the finalized project version as the primary input, in order to see where improvements can be made.
+**Outputs:** This agent should return a finalized report that shows how the current version of our project can be improved with actionable feedback, clear paths, and defined KPIs / goals to try and hit
+**Notes:** This agent should always work through the lens of an expert sports bettor.  Ensure any suggestions come through this lens and can actually provide value.  There is a world where we may want to sell a finalized version of this product. 
+
 ## WHEN TO RUN ##
 **We should run through all agent proccesses through a keyphrase when called, and ensure all data is collected properly through the CLAUDE.md rules**
