@@ -18,6 +18,14 @@ PINNACLE_DF = pd.DataFrame([
     {"player_name": "Rafael Devers", "game": GAME, "commence_time": COMMENCE, "pinnacle_odds": 520, "pinnacle_prob": 1/6.2},
 ])
 
+def test_empty_pinnacle_raises_clear_error():
+    with pytest.raises(ValueError, match="Pinnacle"):
+        calculate_ev(RETAIL_DF, pd.DataFrame())
+
+def test_empty_retail_raises_clear_error():
+    with pytest.raises(ValueError, match="retail"):
+        calculate_ev(pd.DataFrame(), PINNACLE_DF)
+
 def test_one_row_per_player():
     df = calculate_ev(RETAIL_DF, PINNACLE_DF)
     assert len(df) == 2

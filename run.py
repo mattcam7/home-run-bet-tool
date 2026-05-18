@@ -127,6 +127,17 @@ def main() -> None:
     print("Extracting Pinnacle odds...")
     pinnacle_df = extract_pinnacle_odds(raw, now)
 
+    if retail_df.empty or pinnacle_df.empty:
+        missing = "Pinnacle" if pinnacle_df.empty else "retail"
+        print(f"\nNo {missing} HR props available yet for today's games.")
+        if pinnacle_df.empty:
+            print(
+                "Pinnacle posts MLB HR props in the afternoon ET - the sharp "
+                "line is the EV anchor, so nothing can be computed until it's up."
+            )
+            print("Re-run after ~2 PM ET (closer to first pitch is sharper).")
+        return
+
     print("Calculating EV...")
     final_df = calculate_ev(retail_df, pinnacle_df)
     final_df["team"] = final_df["player_name"].map(player_teams).fillna("")

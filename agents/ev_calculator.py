@@ -18,6 +18,19 @@ def calculate_ev(retail_df: pd.DataFrame, pinnacle_df: pd.DataFrame) -> pd.DataF
         Columns include: player_name, game, commence_time, pinnacle_odds, pinnacle_prob,
                          best_retail_odds, best_retail_decimal, ev_pct, composite_score, composite_z
     """
+    # The model is anchored on Pinnacle's no-vig line; with no retail or no
+    # Pinnacle data there is nothing to compare, so fail loudly and clearly
+    # rather than with a downstream KeyError on the empty merge.
+    if retail_df.empty or pinnacle_df.empty:
+        missing = []
+        if pinnacle_df.empty:
+            missing.append("Pinnacle (sharp reference)")
+        if retail_df.empty:
+            missing.append("retail")
+        raise ValueError(
+            "Cannot compute EV: no " + " and no ".join(missing) + " HR odds available."
+        )
+
     # Pivot retail_df from long (one row per player/book) to wide (one row per player, books as columns)
     pivot = retail_df.pivot_table(
         index=["player_name", "game", "commence_time"],

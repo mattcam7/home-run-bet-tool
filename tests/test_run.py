@@ -94,3 +94,24 @@ def test_main_runs_full_pipeline(monkeypatch):
 
     monkeypatch.setattr("run.datetime", _FrozenDT)
     main()  # should not raise
+
+
+def test_main_exits_cleanly_when_pinnacle_missing(monkeypatch):
+    import pandas as pd
+
+    monkeypatch.setenv("ODDS_API_KEY", "test_key")
+    monkeypatch.setattr("run.fetch_odds", lambda key, now: [])
+    monkeypatch.setattr("run.fetch_player_teams", lambda: {})
+    monkeypatch.setattr(
+        "run.extract_retail_odds",
+        lambda raw, now: pd.DataFrame([{"player_name": "X"}]),
+    )
+    monkeypatch.setattr("run.extract_pinnacle_odds", lambda raw, now: pd.DataFrame())
+
+    called = []
+    monkeypatch.setattr("run.calculate_ev", lambda r, p: called.append("ev"))
+    monkeypatch.setattr("run.log_open_plays", lambda df, **kw: called.append("log"))
+    monkeypatch.setattr("run.generate_dashboard", lambda df, **kw: called.append("dash"))
+
+    main()  # must return cleanly, not raise
+    assert called == []  # no EV, no log, no dashboard when Pinnacle absent
