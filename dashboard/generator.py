@@ -176,7 +176,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     function renderParlays(){
       const div=document.getElementById('parlay-cards');
       if(!PARLAYS||!PARLAYS.length){
-        div.innerHTML='<p style="color:#999;font-style:italic">No qualifying longshot parlays found for today\'s slate (need 3+ +EV legs at +500-+1500 across different games).</p>';
+        div.innerHTML='<p style="color:#999;font-style:italic">No qualifying longshot parlays for today (need 3+ +EV legs at +500-+1500 across different games).</p>';
         return;
       }
       div.innerHTML=PARLAYS.map((p,i)=>{
