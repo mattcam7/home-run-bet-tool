@@ -51,3 +51,11 @@ Before proposing any model fix, validate the hypothesis against actual data firs
 ## Trigger Keyphrase
 
 Typing `run the hr dashboard` in this Claude Code chat session triggers execution of `python run.py` from the repo root. This fetches today's MLB HR prop odds, computes EV vs Pinnacle's lines, and opens the interactive HTML dashboard in the default browser.
+
+## Insights Suggestions 5/22 
+
+Add under a ## Domain Rules or ## Betting vs DFS section in CLAUDE.md\n\nDistinguish betting EV from DFS GPP value: a player can be a bad bet (-EV) but a great DFS play (high GPP leverage), and vice versa. Never conflate the two when giving recommendations.
+
+Add under a ## Scheduling / Automation section in CLAUDE.md\n\nFor Windows scheduled tasks, never use 'schtasks /SC MINUTE' alone (one-shot trigger); use /SC MINUTE with /MO and verify recurrence, or prefer a robust scheduler. Always validate the task actually recurs before relying on it.
+
+Add near the top under ## Project Overview and a ## Validation subsection\n\nThis is a Python sports analytics codebase (golf DFS, home run betting, NHL props). Always run model validation and suspend/flag bad markets after changing pricing or props logic.

@@ -40,14 +40,19 @@ def calculate_ev(retail_df: pd.DataFrame, pinnacle_df: pd.DataFrame) -> pd.DataF
     ).reset_index()
     pivot.columns.name = None
 
-    # Inner join with Pinnacle data — excludes any player not listed at Pinnacle
+    # Inner join with sharp anchor — Pinnacle players + BetOnline fallback rows.
+    # sharp_anchor column ("pinnacle" or "betonlineag") is carried through if
+    # present so the dashboard and parlay generator can flag the confidence tier.
+    anchor_cols = ["player_name", "game", "pinnacle_odds", "pinnacle_prob"]
+    if "sharp_anchor" in pinnacle_df.columns:
+        anchor_cols.append("sharp_anchor")
     merged = pivot.merge(
-        pinnacle_df[["player_name", "game", "pinnacle_odds", "pinnacle_prob"]],
+        pinnacle_df[anchor_cols],
         on=["player_name", "game"],
         how="inner",
     )
 
-    meta_cols = {"player_name", "game", "commence_time", "pinnacle_odds", "pinnacle_prob"}
+    meta_cols = {"player_name", "game", "commence_time", "pinnacle_odds", "pinnacle_prob", "sharp_anchor"}
     book_cols = [c for c in merged.columns if c not in meta_cols]
 
     def _best_retail(row):

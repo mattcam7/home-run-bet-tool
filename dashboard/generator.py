@@ -11,7 +11,7 @@ ET = ZoneInfo("America/New_York")
 
 META_COLS = {
     "player_name", "team", "game", "commence_time",
-    "pinnacle_odds", "pinnacle_prob",
+    "pinnacle_odds", "pinnacle_prob", "sharp_anchor",
     "best_retail_odds", "best_retail_decimal", "best_retail_book",
     "ev_pct", "composite_score", "composite_z",
     "kelly_units", "stake_usd",
@@ -36,11 +36,24 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     tr.strong-play{background:#28a745!important;color:#fff;font-weight:700}
     tr.negative-ev td{color:#aaa}
     tr.hidden{display:none}
+    .anchor-pin{color:#0d6efd;font-size:.78em;font-weight:600}
+    .anchor-bol{color:#fd7e14;font-size:.78em;font-weight:600}
     #parlay-builder{margin-top:32px;background:#fff;padding:20px 24px;box-shadow:0 1px 4px rgba(0,0,0,.1);border-radius:4px}
     #parlay-builder h2{margin-top:0}
     .parlay-leg{font-size:.95em;margin:2px 0}
     #parlay-stats{margin-top:12px;line-height:1.8}
     .stat-label{font-weight:600}
+    #suggested-parlays{margin-top:32px;background:#fff;padding:20px 24px;box-shadow:0 1px 4px rgba(0,0,0,.1);border-radius:4px}
+    #suggested-parlays h2{margin-top:0;color:#495057}
+    .parlay-card{border:1px solid #dee2e6;border-radius:6px;padding:14px 16px;margin-bottom:12px;background:#fafafa}
+    .parlay-card.all-same-book{border-left:4px solid #0d6efd}
+    .parlay-card.has-bol{border-left:4px solid #fd7e14}
+    .parlay-card-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px}
+    .parlay-ev{font-size:1.1em;font-weight:700;color:#28a745}
+    .parlay-meta{color:#6c757d;font-size:.85em}
+    .parlay-legs-list{margin:0;padding-left:18px;font-size:.9em;line-height:1.8}
+    .flag-bol{background:#fff3cd;color:#856404;border-radius:3px;padding:1px 5px;font-size:.78em;margin-left:4px}
+    .flag-book{background:#cfe2ff;color:#0a58ca;border-radius:3px;padding:1px 5px;font-size:.78em;margin-left:4px}
   </style>
 </head>
 <body>
@@ -57,6 +70,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       <th onclick="sortBy('team')">Team</th>
       <th onclick="sortBy('time_sort')">Time (ET)</th>
       <th onclick="sortBy('pinnacle_pct')">Pin %</th>
+      <th onclick="sortBy('sharp_anchor')">Anchor</th>
       __BOOK_HEADERS__
       <th onclick="sortBy('best_retail_odds')">Best Retail</th>
       <th onclick="sortBy('ev_pct')">EV%</th>
@@ -65,14 +79,20 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     </tr></thead>
     <tbody id="table-body"></tbody>
   </table>
+  <div id="suggested-parlays">
+    <h2>Suggested Longshot Parlays</h2>
+    <p style="color:#6c757d;font-size:.9em">+EV legs at +500 to +1500 | no same-game | ranked by combined EV</p>
+    <div id="parlay-cards"></div>
+  </div>
   <div id="parlay-builder">
-    <h2>Parlay Builder</h2>
+    <h2>Manual Parlay Builder</h2>
     <div id="parlay-legs"><em style="color:#999">Select players above to build a parlay</em></div>
     <div id="parlay-stats"></div>
   </div>
   <script>
     const DATA=__DATA__;
     const BOOKS=__BOOK_NAMES__;
+    const PARLAYS=__PARLAYS__;
     let sortKey='composite_z',sortDir=-1,minEv=-100;
     const legs={};
     function fmtOdds(v){return v==null?'--':v>0?'+'+v:''+v}
@@ -80,6 +100,10 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     function fmtZ(v){return(v>=0?'+':'')+v.toFixed(2)}
     function impliedPct(v){if(v==null)return'--';const d=v>0?(v/100)+1:(100/Math.abs(v))+1;return(100/d).toFixed(1)+'%'}
     function fmtBook(v){if(v==null)return'<td>--</td>';return`<td>${fmtOdds(v)}<span class="odds-pct">${impliedPct(v)}</span></td>`}
+    function fmtAnchor(a){
+      if(!a||a==='pinnacle')return'<span class="anchor-pin">PIN</span>';
+      return'<span class="anchor-bol">BOL</span>';
+    }
     function rowCls(r){
       if(r.composite_z>=1.5)return 'strong-play';
       if(r.ev_pct>0)return 'positive-ev';
@@ -99,6 +123,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
           <td><input type="checkbox" ${legs[r.player+'|'+r.game]?'checked':''} onchange="toggleLeg('${r.player}','${r.game}',this)"></td>
           <td>${r.player}</td><td>${r.team}</td><td>${r.time}</td>
           <td>${r.pinnacle_pct.toFixed(1)}%</td>
+          <td>${fmtAnchor(r.sharp_anchor)}</td>
           ${BOOKS.map(b=>fmtBook(r[b])).join('')}
           <td>${fmtOdds(r.best_retail_odds)}</td>
           <td>${fmtPct(r.ev_pct)}</td>
@@ -148,7 +173,37 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         <div><span class="stat-label">Combined EV%:</span> ${fmtPct(pEv*100)}</div>
         <div><span class="stat-label">Composite Z:</span> ${pZ}</div>`;
     }
+    function renderParlays(){
+      const div=document.getElementById('parlay-cards');
+      if(!PARLAYS||!PARLAYS.length){
+        div.innerHTML='<p style="color:#999;font-style:italic">No qualifying longshot parlays found for today\'s slate (need 3+ +EV legs at +500-+1500 across different games).</p>';
+        return;
+      }
+      div.innerHTML=PARLAYS.map((p,i)=>{
+        const cls=[
+          'parlay-card',
+          p.all_same_book?'all-same-book':'',
+          p.has_betonline_anchor?'has-bol':'',
+        ].filter(Boolean).join(' ');
+        const bolFlag=p.has_betonline_anchor?'<span class="flag-bol">BOL anchor</span>':'';
+        const bookFlag=p.all_same_book?`<span class="flag-book">all ${p.books[0]}</span>`:'';
+        const legsHtml=p.legs.map((leg,j)=>{
+          const o=p.leg_odds[j];
+          const odds_str=o>0?'+'+o:''+o;
+          return`<li>${leg} &nbsp;<strong>${odds_str}</strong> @ ${p.books[j]} <em style="color:#6c757d">(EV ${p.leg_ev_pcts[j]>=0?'+':''}${p.leg_ev_pcts[j]}%)</em></li>`;
+        }).join('');
+        return`<div class="${cls}">
+  <div class="parlay-card-header">
+    <span><strong>#${i+1} &nbsp; ${p.n_legs}-leg parlay</strong> &nbsp; ${bolFlag}${bookFlag}</span>
+    <span class="parlay-ev">EV +${p.combined_ev_pct}%</span>
+  </div>
+  <div class="parlay-meta">Odds ${p.combined_american} &nbsp;|&nbsp; Hit prob ${p.combined_prob_pct}%</div>
+  <ul class="parlay-legs-list">${legsHtml}</ul>
+</div>`;
+      }).join('');
+    }
     renderTable();
+    renderParlays();
   </script>
 </body>
 </html>"""
@@ -158,6 +213,8 @@ def generate_dashboard(
     final_df: pd.DataFrame,
     output_path: str = "hr_dashboard.html",
     open_browser: bool = True,
+    *,
+    parlays: list | None = None,
 ) -> None:
     book_cols = [c for c in final_df.columns if c not in META_COLS]
 
@@ -170,6 +227,7 @@ def generate_dashboard(
             "time": row["commence_time"].astimezone(ET).strftime("%I:%M %p ET"),
             "time_sort": row["commence_time"].timestamp(),
             "pinnacle_pct": round(row["pinnacle_prob"] * 100, 2),
+            "sharp_anchor": row.get("sharp_anchor", "pinnacle"),
             "best_retail_odds": int(row["best_retail_odds"]),
             "ev_pct": round(row["ev_pct"] * 100, 2),
             "stake_units": round(row["kelly_units"], 1),
@@ -194,6 +252,7 @@ def generate_dashboard(
         .replace("__DATA__", json.dumps(records))
         .replace("__BOOK_NAMES__", json.dumps(book_cols))
         .replace("__BOOK_HEADERS__", book_headers)
+        .replace("__PARLAYS__", json.dumps(parlays or []))
         .replace("__TIMESTAMP__", timestamp)
         .replace("__N_PLAYERS__", str(n_players))
         .replace("__N_POSITIVE__", str(n_positive))

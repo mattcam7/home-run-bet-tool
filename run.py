@@ -7,7 +7,8 @@ from dotenv import load_dotenv
 from agents.clv_log import log_open_plays
 from agents.ev_calculator import calculate_ev
 from agents.odds_scraper import extract_retail_odds
-from agents.pinnacle_scraper import extract_pinnacle_odds
+from agents.parlay import format_parlays, generate_parlays
+from agents.pinnacle_scraper import extract_sharp_anchor
 from dashboard.generator import generate_dashboard
 
 
@@ -124,22 +125,26 @@ def main() -> None:
     print("Extracting retail odds...")
     retail_df = extract_retail_odds(raw, now)
 
-    print("Extracting Pinnacle odds...")
-    pinnacle_df = extract_pinnacle_odds(raw, now)
+    print("Extracting sharp anchor odds (Pinnacle + BetOnline fallback)...")
+    anchor_df = extract_sharp_anchor(raw, now)
 
-    if retail_df.empty or pinnacle_df.empty:
-        missing = "Pinnacle" if pinnacle_df.empty else "retail"
+    if retail_df.empty or anchor_df.empty:
+        missing = "sharp anchor (Pinnacle/BetOnline)" if anchor_df.empty else "retail"
         print(f"\nNo {missing} HR props available yet for today's games.")
-        if pinnacle_df.empty:
+        if anchor_df.empty:
             print(
-                "Pinnacle posts MLB HR props in the afternoon ET - the sharp "
-                "line is the EV anchor, so nothing can be computed until it's up."
+                "Pinnacle and BetOnline post MLB HR props in the afternoon ET - "
+                "the sharp line is the EV anchor, so nothing can be computed until it's up."
             )
             print("Re-run after ~2 PM ET (closer to first pitch is sharper).")
         return
 
+    n_pin = int((anchor_df.get("sharp_anchor", "") == "pinnacle").sum()) if "sharp_anchor" in anchor_df.columns else len(anchor_df)
+    n_bol = len(anchor_df) - n_pin
+    print(f"Anchor coverage: {n_pin} Pinnacle + {n_bol} BetOnline fallback = {len(anchor_df)} total")
+
     print("Calculating EV...")
-    final_df = calculate_ev(retail_df, pinnacle_df)
+    final_df = calculate_ev(retail_df, anchor_df)
     final_df["team"] = final_df["player_name"].map(player_teams).fillna("")
 
     n_players = len(final_df)
@@ -149,7 +154,11 @@ def main() -> None:
     log_open_plays(final_df, now=now)
     print("Logged open plays to CLV log.")
 
-    generate_dashboard(final_df)
+    parlays = generate_parlays(final_df)
+    if parlays:
+        print(f"\n{format_parlays(parlays)}")
+
+    generate_dashboard(final_df, parlays=parlays)
     print("Dashboard opened in browser.")
 
 

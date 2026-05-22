@@ -96,7 +96,8 @@ def test_main_runs_full_pipeline(monkeypatch):
     main()  # should not raise
 
 
-def test_main_exits_cleanly_when_pinnacle_missing(monkeypatch):
+def test_main_exits_cleanly_when_anchor_missing(monkeypatch):
+    """No sharp anchor (Pinnacle + BetOnline both absent) → clean exit, no EV/log/dashboard."""
     import pandas as pd
 
     monkeypatch.setenv("ODDS_API_KEY", "test_key")
@@ -106,7 +107,8 @@ def test_main_exits_cleanly_when_pinnacle_missing(monkeypatch):
         "run.extract_retail_odds",
         lambda raw, now: pd.DataFrame([{"player_name": "X"}]),
     )
-    monkeypatch.setattr("run.extract_pinnacle_odds", lambda raw, now: pd.DataFrame())
+    # extract_sharp_anchor is what run.py now calls for the open-play anchor
+    monkeypatch.setattr("run.extract_sharp_anchor", lambda raw, now: pd.DataFrame())
 
     called = []
     monkeypatch.setattr("run.calculate_ev", lambda r, p: called.append("ev"))
@@ -114,4 +116,4 @@ def test_main_exits_cleanly_when_pinnacle_missing(monkeypatch):
     monkeypatch.setattr("run.generate_dashboard", lambda df, **kw: called.append("dash"))
 
     main()  # must return cleanly, not raise
-    assert called == []  # no EV, no log, no dashboard when Pinnacle absent
+    assert called == []  # no EV, no log, no dashboard when anchor absent
