@@ -8,12 +8,25 @@ from agents.utils import american_to_decimal
 BETONLINE_KEY = "betonlineag"
 
 
-def _extract_book_devig(raw_payload: list, now: datetime, book_key: str) -> list[dict]:
+def _extract_book_devig(
+    raw_payload: list,
+    now: datetime,
+    book_key: str,
+    require_under: bool = False,
+) -> list[dict]:
     """Extract de-vigged HR Over probabilities from a single sportsbook.
 
-    Pairs the Over/Under at point 0.5 per player to strip vig.  Falls back
-    to the vig-inclusive implied prob when no Under is posted (plausibility
-    guard — player is surfaced rather than silently dropped).
+    Pairs the Over/Under at point 0.5 per player to strip vig.
+
+    Parameters
+    ----------
+    require_under : bool
+        When True, skip any player whose Under is not posted — the
+        vig-inclusive fallback is not used.  Set to True for secondary
+        anchors (BetOnline) where an Over-only price is a one-sided
+        novelty line with no reliable sharp probability signal.
+        Pinnacle (primary anchor) uses False so a rare Over-only entry
+        is still surfaced rather than silently dropped.
 
     Returns a list of dicts (not a DataFrame) so callers can merge before
     constructing the frame.
@@ -48,6 +61,11 @@ def _extract_book_devig(raw_payload: list, now: datetime, book_key: str) -> list
                         under_imp = 1 / american_to_decimal(prices["Under"])
                         true_prob = over_imp / (over_imp + under_imp)
                     else:
+                        if require_under:
+                            # One-sided line — no reliable de-vig possible.
+                            # Skip rather than inflating the probability with
+                            # the vig-inclusive implied odds.
+                            continue
                         # No Under posted — cannot strip vig. Fall back to the
                         # vig-inclusive implied prob (plausibility guard) so the
                         # player is still surfaced rather than silently dropped.
@@ -96,7 +114,10 @@ def extract_sharp_anchor(raw_payload: list, now: datetime) -> pd.DataFrame:
     for r in pin_rows:
         r["sharp_anchor"] = "pinnacle"
 
-    bol_rows = _extract_book_devig(raw_payload, now, BETONLINE_KEY)
+    # require_under=True: BetOnline Over-only lines for bench players carry no
+    # reliable de-vig signal (one-sided novelty pricing). Skip them rather than
+    # inflating probabilities with vig-inclusive implied odds.
+    bol_rows = _extract_book_devig(raw_payload, now, BETONLINE_KEY, require_under=True)
     fallback = [
         {**r, "sharp_anchor": BETONLINE_KEY}
         for r in bol_rows

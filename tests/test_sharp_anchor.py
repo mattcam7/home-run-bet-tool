@@ -162,3 +162,61 @@ def test_fixture_payload_works_with_extract_sharp_anchor():
     df = extract_sharp_anchor(FIXTURE_PAYLOAD, FIXTURE_NOW)
     assert not df.empty
     assert set(df["sharp_anchor"].unique()).issubset({"pinnacle", "betonlineag"})
+
+
+def test_betonline_over_only_is_excluded():
+    """BetOnline Over-only lines (no matching Under) must be skipped.
+
+    Over-only prices are one-sided novelty lines with no reliable de-vig
+    signal — using vig-inclusive implied prob inflates the probability and
+    generates phantom EV.  The player should be absent from the anchor df.
+    """
+    payload = [{
+        "id": "g1",
+        "home_team": "Boston Red Sox",
+        "away_team": "New York Yankees",
+        "commence_time": COMMENCE,
+        "bookmakers": [{
+            "key": "betonlineag",
+            "title": "BetOnline.ag",
+            "markets": [{"key": "batter_home_runs", "outcomes": [
+                # Over only — no matching Under posted
+                {"name": "Over", "description": "Bench Guy", "price": 700, "point": 0.5},
+            ]}],
+        }],
+    }]
+    df = extract_sharp_anchor(payload, FIXTURE_NOW)
+    assert df.empty or "Bench Guy" not in df["player_name"].values
+
+
+def test_betonline_two_sided_market_is_included():
+    """BetOnline with both Over and Under should still produce an anchor row."""
+    df = extract_sharp_anchor(PAYLOAD_BOL_ONLY, FIXTURE_NOW)
+    # PAYLOAD_BOL_ONLY has Devers with Over +520 / Under -900
+    assert "Rafael Devers" in df["player_name"].values
+
+
+def test_pinnacle_over_only_still_surfaced_as_fallback():
+    """Pinnacle Over-only uses the vig-inclusive fallback (not skipped).
+
+    Pinnacle rarely omits an Under — when they do, the Over price is still
+    a sharp signal and we prefer surfacing it over silently dropping it.
+    """
+    payload = [{
+        "id": "g",
+        "home_team": "Boston Red Sox",
+        "away_team": "New York Yankees",
+        "commence_time": COMMENCE,
+        "bookmakers": [{
+            "key": "pinnacle",
+            "title": "Pinnacle",
+            "markets": [{"key": "batter_home_runs", "outcomes": [
+                {"name": "Over", "description": "Solo Over", "price": 400, "point": 0.5},
+            ]}],
+        }],
+    }]
+    df = extract_sharp_anchor(payload, FIXTURE_NOW)
+    assert "Solo Over" in df["player_name"].values
+    row = df[df["player_name"] == "Solo Over"].iloc[0]
+    # Prob is vig-inclusive (1/5.0 = 0.20), not stripped
+    assert abs(row["pinnacle_prob"] - (1 / (400 / 100 + 1))) < 1e-6
