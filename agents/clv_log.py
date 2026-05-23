@@ -75,6 +75,9 @@ def log_open_plays(final_df: pd.DataFrame, path: str = DEFAULT_PATH, now=None) -
             "stake_usd": float(r["stake_usd"]),
         })
     new_idx = pd.DataFrame(rows, columns=COLUMNS).set_index(KEY)
+    # Defensive dedup: if final_df somehow produced two rows for the same
+    # (game_date, game, player_name), keep the last (most recent within run).
+    new_idx = new_idx[~new_idx.index.duplicated(keep="last")]
 
     dirname = os.path.dirname(path)
     if dirname:

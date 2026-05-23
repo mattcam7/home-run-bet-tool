@@ -81,7 +81,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
   </table>
   <div id="suggested-parlays">
     <h2>Suggested Longshot Parlays</h2>
-    <p style="color:#6c757d;font-size:.9em">+EV legs at +500 to +1500 | no same-game | ranked by combined EV</p>
+    <p style="color:#6c757d;font-size:.9em">Same-book &middot; +EV legs at +500 to +1500 &middot; no same-game &middot; ranked by combined EV</p>
     <div id="parlay-cards"></div>
   </div>
   <div id="parlay-builder">
@@ -176,7 +176,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     function renderParlays(){
       const div=document.getElementById('parlay-cards');
       if(!PARLAYS||!PARLAYS.length){
-        div.innerHTML='<p style="color:#999;font-style:italic">No qualifying longshot parlays for today (need 3+ +EV legs at +500-+1500 across different games).</p>';
+        div.innerHTML='<p style="color:#999;font-style:italic">No qualifying same-book parlays for today (need 3+ +EV legs at +500-+1500 within one sportsbook, across different games).</p>';
         return;
       }
       div.innerHTML=PARLAYS.map((p,i)=>{
@@ -185,16 +185,16 @@ HTML_TEMPLATE = """<!DOCTYPE html>
           p.all_same_book?'all-same-book':'',
           p.has_betonline_anchor?'has-bol':'',
         ].filter(Boolean).join(' ');
+        const book=p.book||(p.books&&p.books[0])||'?';
         const bolFlag=p.has_betonline_anchor?'<span class="flag-bol">BOL anchor</span>':'';
-        const bookFlag=p.all_same_book?`<span class="flag-book">all ${p.books[0]}</span>`:'';
         const legsHtml=p.legs.map((leg,j)=>{
           const o=p.leg_odds[j];
           const odds_str=o>0?'+'+o:''+o;
-          return`<li>${leg} &nbsp;<strong>${odds_str}</strong> @ ${p.books[j]} <em style="color:#6c757d">(EV ${p.leg_ev_pcts[j]>=0?'+':''}${p.leg_ev_pcts[j]}%)</em></li>`;
+          return`<li>${leg} &nbsp;<strong>${odds_str}</strong><em style="color:#6c757d"> (EV ${p.leg_ev_pcts[j]>=0?'+':''}${p.leg_ev_pcts[j]}%)</em></li>`;
         }).join('');
         return`<div class="${cls}">
   <div class="parlay-card-header">
-    <span><strong>#${i+1} &nbsp; ${p.n_legs}-leg parlay</strong> &nbsp; ${bolFlag}${bookFlag}</span>
+    <span><strong>#${i+1} &nbsp; ${p.n_legs}-leg</strong> &nbsp; <span class="flag-book">${book}</span> &nbsp; ${bolFlag}</span>
     <span class="parlay-ev">EV +${p.combined_ev_pct}%</span>
   </div>
   <div class="parlay-meta">Odds ${p.combined_american} &nbsp;|&nbsp; Hit prob ${p.combined_prob_pct}%</div>

@@ -127,4 +127,8 @@ def extract_sharp_anchor(raw_payload: list, now: datetime) -> pd.DataFrame:
     all_rows = pin_rows + fallback
     if not all_rows:
         return pd.DataFrame()
-    return pd.DataFrame(all_rows)
+    df = pd.DataFrame(all_rows)
+    # Deduplicate: Pinnacle rows precede fallback rows, so keep='first'
+    # preserves the Pinnacle entry whenever both books price the same player.
+    df = df.drop_duplicates(subset=["player_name", "game"], keep="first")
+    return df
