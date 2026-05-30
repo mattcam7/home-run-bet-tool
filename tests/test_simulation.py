@@ -268,28 +268,29 @@ class TestAddSimulation:
         assert list(result.columns) == list(df.columns)
 
     def test_adds_sim_columns_when_data_available(self, tmp_path, monkeypatch):
-        """With mocked pybaseball, sim columns are added and sim_prob is in [0.01, 0.60]."""
+        """With mocked pybaseball and network, sim columns are added with valid sim_prob."""
         import pybaseball as _pybaseball
+        import agents.simulation as sim_mod
 
-        monkeypatch.setattr(
-            "agents.simulation.CACHE_DIR", tmp_path / "sim_cache"
-        )
-        monkeypatch.setattr(
-            "agents.simulation.MODEL_PATH", tmp_path / "sim_model.pkl"
-        )
-        monkeypatch.setattr(
-            "agents.simulation.UNMATCHED_LOG", tmp_path / "sim_unmatched.log"
-        )
-        monkeypatch.setattr(
-            "agents.simulation.PARK_FACTORS_PATH",
-            __import__("pathlib").Path("data/park_factors.json")
-        )
+        monkeypatch.setattr(sim_mod, "CACHE_DIR", tmp_path / "sim_cache")
+        monkeypatch.setattr(sim_mod, "MODEL_PATH", tmp_path / "sim_model.pkl")
+        monkeypatch.setattr(sim_mod, "UNMATCHED_LOG", tmp_path / "sim_unmatched.log")
 
-        judge_row = {
-            "Name": "Aaron Judge", "Barrel%": 18.0, "ISO": 0.340,
-            "FB%": 42.0, "Hard%": 58.0, "EV": 95.0, "HR": 25, "G": 80, "PA": 300
-        }
-        mock_batter_df = pd.DataFrame([judge_row])
+        # Build a small but non-degenerate batter DataFrame (need >=2 rows for Ridge)
+        import numpy as np
+        rng = np.random.default_rng(0)
+        n = 10
+        mock_batter_df = pd.DataFrame({
+            "Name": ["Aaron Judge"] + [f"Player{i}" for i in range(n - 1)],
+            "Barrel%": [18.0] + list(rng.uniform(4, 18, n - 1)),
+            "ISO": [0.340] + list(rng.uniform(0.10, 0.35, n - 1)),
+            "FB%": [42.0] + list(rng.uniform(25, 55, n - 1)),
+            "Hard%": [58.0] + list(rng.uniform(30, 55, n - 1)),
+            "EV": [95.0] + list(rng.uniform(85, 95, n - 1)),
+            "HR": [25] + list(rng.integers(5, 40, n - 1)),
+            "G": [80] + list(rng.integers(80, 162, n - 1)),
+            "PA": [300] + list(rng.integers(200, 600, n - 1)),
+        })
 
         cole_row = {
             "Name": "Gerrit Cole", "HR/9": 1.1, "HR/FB": 0.10, "xFIP": 3.20, "IP": 80.0
@@ -299,12 +300,22 @@ class TestAddSimulation:
         monkeypatch.setattr(_pybaseball, "batting_stats", lambda s, qual=50: mock_batter_df)
         monkeypatch.setattr(_pybaseball, "pitching_stats", lambda s, qual=1: mock_pitcher_df)
 
+        # Mock network-dependent functions to avoid live API calls
+        monkeypatch.setattr(sim_mod, "_fetch_probable_starters", lambda today: {})
+        monkeypatch.setattr(sim_mod, "_fetch_batter_hands", lambda: {})
+
         df = self._make_final_df()
         result = add_simulation(df)
         assert "sim_prob" in result.columns
         assert "sim_edge" in result.columns
         assert "convergence" in result.columns
-        assert result["sim_prob"].dropna().between(0.01, 0.60).all()
+        # Aaron Judge should be matched with valid sim_prob in [0.01, 0.60]
+        matched = result["sim_prob"].dropna()
+        assert len(matched) > 0, "No players were matched to FanGraphs data"
+        assert matched.between(0.01, 0.60).all()
+        # With elite stats (Barrel 18, ISO .340), sim_prob should be non-trivial
+        judge_prob = result.loc[result.index[0], "sim_prob"]
+        assert 0.05 < judge_prob < 0.55, f"sim_prob {judge_prob:.3f} is implausibly outside 0.05-0.55"
 
 
 def test_add_simulation_importable_from_run():

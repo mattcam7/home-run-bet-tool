@@ -76,6 +76,23 @@ TEAM_NAME_TO_ABBREV: dict[str, str] = {
     "Washington Nationals": "WSH",
 }
 
+# MLB Stats API uses different abbreviations from FanGraphs for 6 teams.
+# This mapping converts MLB API style -> FanGraphs/park_factors.json style.
+_MLB_API_TO_FG_ABBREV: dict[str, str] = {
+    "KC": "KCR",   # Kansas City Royals
+    "SD": "SDP",   # San Diego Padres
+    "SF": "SFG",   # San Francisco Giants
+    "TB": "TBR",   # Tampa Bay Rays
+    "AZ": "ARI",   # Arizona Diamondbacks
+    "ATH": "OAK",  # Athletics (relocated)
+}
+
+
+def _normalize_team_abbrev(abbrev: str) -> str:
+    """Convert MLB Stats API team abbreviation to FanGraphs/park_factors.json style."""
+    return _MLB_API_TO_FG_ABBREV.get(abbrev, abbrev)
+
+
 # ---------------------------------------------------------------------------
 # Name normalization
 # ---------------------------------------------------------------------------
@@ -391,7 +408,7 @@ def _fetch_probable_starters(today: str) -> dict:
                     abbrev = team_data.get("team", {}).get("abbreviation", "")
                     prob = team_data.get("probablePitcher", {})
                     if abbrev and prob:
-                        result[abbrev] = {
+                        result[_normalize_team_abbrev(abbrev)] = {
                             "name": prob.get("fullName", ""),
                             "hand": prob.get("pitchHand", {}).get("code", ""),
                         }
@@ -444,6 +461,8 @@ def _get_pitcher_factor(
     away_name, home_name = game.split(" @ ", 1)
     away_abbrev = TEAM_NAME_TO_ABBREV.get(away_name.strip(), "")
     home_abbrev = TEAM_NAME_TO_ABBREV.get(home_name.strip(), "")
+
+    batter_team = _normalize_team_abbrev(batter_team)
 
     # Batter faces the OPPOSING team's starter
     if batter_team == home_abbrev:
