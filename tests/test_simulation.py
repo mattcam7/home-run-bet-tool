@@ -55,8 +55,8 @@ class TestGetWeightedBatterStats:
     """Tests weighted batter stat lookup (mocks pybaseball calls)."""
 
     def _make_batter_df(self, name: str, vals: dict) -> pd.DataFrame:
-        row = {"Name": name, "HR": 20, "G": 140, "PA": 500}
-        row.update({"Barrel%": 8.0, "ISO": 0.200, "FB%": 38.0, "Hard%": 42.0, "EV": 89.5})
+        row = {"Name": name, "HR": 20, "G": 140}
+        row.update({"brl_percent": 8.0, "avg_hit_speed": 89.5, "ev95percent": 42.0, "iso": 0.200})
         row.update(vals)
         return pd.DataFrame([row])
 
@@ -64,31 +64,31 @@ class TestGetWeightedBatterStats:
         batter_dfs = {
             2024: self._make_batter_df("Aaron Judge", {}),
             2025: self._make_batter_df("Aaron Judge", {}),
-            2026: pd.DataFrame(columns=["Name"] + BATTER_FEATURES + ["HR", "G", "PA"]),
+            2026: pd.DataFrame(columns=["Name"] + BATTER_FEATURES + ["HR", "G"]),
         }
         result = _get_weighted_batter_stats("Totally Unknown Player", batter_dfs)
         assert result is None
 
     def test_single_season_returns_that_seasons_stats(self):
         batter_dfs = {
-            2024: pd.DataFrame(columns=["Name"] + BATTER_FEATURES + ["HR", "G", "PA"]),
-            2025: pd.DataFrame(columns=["Name"] + BATTER_FEATURES + ["HR", "G", "PA"]),
-            2026: self._make_batter_df("Aaron Judge", {"Barrel%": 10.0}),
+            2024: pd.DataFrame(columns=["Name"] + BATTER_FEATURES + ["HR", "G"]),
+            2025: pd.DataFrame(columns=["Name"] + BATTER_FEATURES + ["HR", "G"]),
+            2026: self._make_batter_df("Aaron Judge", {"brl_percent": 10.0}),
         }
         result = _get_weighted_batter_stats("Aaron Judge", batter_dfs)
         assert result is not None
-        assert abs(result["Barrel%"] - 10.0) < 0.01
+        assert abs(result["brl_percent"] - 10.0) < 0.01
 
     def test_weighted_average_across_seasons(self):
         """With 2024=0.10, 2025=0.30, 2026=0.60 weights, confirm weighted avg."""
-        # Barrel%: 2024=4.0, 2025=8.0, 2026=12.0 -> weighted avg = 0.1*4+0.3*8+0.6*12 = 10.0
-        df_2024 = pd.DataFrame([{"Name": "Aaron Judge", "Barrel%": 4.0, "ISO": 0.2, "FB%": 38.0, "Hard%": 42.0, "EV": 88.0, "HR": 15, "G": 140, "PA": 490}])
-        df_2025 = pd.DataFrame([{"Name": "Aaron Judge", "Barrel%": 8.0, "ISO": 0.2, "FB%": 38.0, "Hard%": 42.0, "EV": 88.0, "HR": 20, "G": 140, "PA": 490}])
-        df_2026 = pd.DataFrame([{"Name": "Aaron Judge", "Barrel%": 12.0, "ISO": 0.2, "FB%": 38.0, "Hard%": 42.0, "EV": 88.0, "HR": 12, "G": 70, "PA": 245}])
+        # brl_percent: 2024=4.0, 2025=8.0, 2026=12.0 -> weighted avg = 0.1*4+0.3*8+0.6*12 = 10.0
+        df_2024 = pd.DataFrame([{"Name": "Aaron Judge", "brl_percent": 4.0, "avg_hit_speed": 88.0, "ev95percent": 42.0, "iso": 0.2, "HR": 15, "G": 140}])
+        df_2025 = pd.DataFrame([{"Name": "Aaron Judge", "brl_percent": 8.0, "avg_hit_speed": 88.0, "ev95percent": 42.0, "iso": 0.2, "HR": 20, "G": 140}])
+        df_2026 = pd.DataFrame([{"Name": "Aaron Judge", "brl_percent": 12.0, "avg_hit_speed": 88.0, "ev95percent": 42.0, "iso": 0.2, "HR": 12, "G": 70}])
         batter_dfs = {2024: df_2024, 2025: df_2025, 2026: df_2026}
         result = _get_weighted_batter_stats("Aaron Judge", batter_dfs)
         assert result is not None
-        assert abs(result["Barrel%"] - 10.0) < 0.01
+        assert abs(result["brl_percent"] - 10.0) < 0.01
 
 
 class TestGetPitcherStatsByName:
@@ -118,30 +118,28 @@ from agents.simulation import HRRateModel, BATTER_FEATURES
 def _make_training_df(n: int = 50) -> pd.DataFrame:
     """
     Synthetic training data with plausible feature ranges and realistic signal.
+    Features match BATTER_FEATURES: brl_percent, avg_hit_speed, ev95percent, iso.
     hr_per_game is derived from features (like real data) so that Ridge can
-    learn positive coefficients for power metrics (Barrel%, ISO, etc.).
+    learn positive coefficients for power metrics.
     """
     rng = np.random.default_rng(42)
-    barrel = rng.uniform(4, 18, n)
-    iso = rng.uniform(0.10, 0.35, n)
-    fb = rng.uniform(25, 55, n)
-    hard = rng.uniform(30, 55, n)
-    ev = rng.uniform(85, 95, n)
+    brl = rng.uniform(4, 18, n)           # brl_percent (Barrel%)
+    ev = rng.uniform(85, 95, n)            # avg_hit_speed (exit velocity)
+    hard = rng.uniform(30, 55, n)          # ev95percent (hard hit %)
+    iso = rng.uniform(0.10, 0.35, n)       # iso (slugging - batting avg)
     # hr_per_game has a realistic positive relationship with power metrics
     hr_per_game = (
-        0.004 * barrel
+        0.004 * brl
         + 0.15 * iso
-        + 0.001 * fb
         + 0.001 * hard
         + 0.001 * ev
         + rng.normal(0, 0.005, n)  # small noise
     ).clip(0)
     data = {
-        "Barrel%": barrel,
-        "ISO": iso,
-        "FB%": fb,
-        "Hard%": hard,
-        "EV": ev,
+        "brl_percent": brl,
+        "avg_hit_speed": ev,
+        "ev95percent": hard,
+        "iso": iso,
         "HR": (hr_per_game * 140).astype(int),
         "G": np.full(n, 140),
         "hr_per_game": hr_per_game,
@@ -154,7 +152,7 @@ class TestHRRateModel:
         model = HRRateModel()
         train_df = _make_training_df(50)
         model.fit(train_df)
-        features = {"Barrel%": 10.0, "ISO": 0.22, "FB%": 38.0, "Hard%": 44.0, "EV": 90.0}
+        features = {"brl_percent": 10.0, "avg_hit_speed": 90.0, "ev95percent": 44.0, "iso": 0.22}
         result = model.predict(features)
         assert isinstance(result, float)
         assert result >= 0.0
@@ -163,9 +161,9 @@ class TestHRRateModel:
         model = HRRateModel()
         train_df = _make_training_df(200)
         model.fit(train_df)
-        base = {"ISO": 0.22, "FB%": 38.0, "Hard%": 44.0, "EV": 90.0}
-        low = model.predict({**base, "Barrel%": 4.0})
-        high = model.predict({**base, "Barrel%": 18.0})
+        base = {"avg_hit_speed": 90.0, "ev95percent": 44.0, "iso": 0.22}
+        low = model.predict({**base, "brl_percent": 4.0})
+        high = model.predict({**base, "brl_percent": 18.0})
         assert high > low
 
     def test_save_and_load_round_trip(self, tmp_path):
@@ -176,13 +174,13 @@ class TestHRRateModel:
         model.save(path)
         model2 = HRRateModel()
         model2.load(path)
-        features = {"Barrel%": 10.0, "ISO": 0.22, "FB%": 38.0, "Hard%": 44.0, "EV": 90.0}
+        features = {"brl_percent": 10.0, "avg_hit_speed": 90.0, "ev95percent": 44.0, "iso": 0.22}
         assert abs(model.predict(features) - model2.predict(features)) < 1e-9
 
     def test_predict_before_fit_raises(self):
         model = HRRateModel()
         with pytest.raises(RuntimeError, match="not fitted"):
-            model.predict({"Barrel%": 10.0, "ISO": 0.2, "FB%": 38.0, "Hard%": 42.0, "EV": 90.0})
+            model.predict({"brl_percent": 10.0, "avg_hit_speed": 90.0, "ev95percent": 42.0, "iso": 0.2})
 
 
 from agents.simulation import (
@@ -268,39 +266,34 @@ class TestAddSimulation:
         assert list(result.columns) == list(df.columns)
 
     def test_adds_sim_columns_when_data_available(self, tmp_path, monkeypatch):
-        """With mocked pybaseball and network, sim columns are added with valid sim_prob."""
-        import pybaseball as _pybaseball
+        """With mocked fetch functions and no network calls, sim columns are added correctly."""
         import agents.simulation as sim_mod
 
         monkeypatch.setattr(sim_mod, "CACHE_DIR", tmp_path / "sim_cache")
         monkeypatch.setattr(sim_mod, "MODEL_PATH", tmp_path / "sim_model.pkl")
         monkeypatch.setattr(sim_mod, "UNMATCHED_LOG", tmp_path / "sim_unmatched.log")
 
-        # Build a small but non-degenerate batter DataFrame (need >=2 rows for Ridge)
+        # Build mock batter DataFrame using Statcast column names
         import numpy as np
         rng = np.random.default_rng(0)
         n = 10
         mock_batter_df = pd.DataFrame({
             "Name": ["Aaron Judge"] + [f"Player{i}" for i in range(n - 1)],
-            "Barrel%": [18.0] + list(rng.uniform(4, 18, n - 1)),
-            "ISO": [0.340] + list(rng.uniform(0.10, 0.35, n - 1)),
-            "FB%": [42.0] + list(rng.uniform(25, 55, n - 1)),
-            "Hard%": [58.0] + list(rng.uniform(30, 55, n - 1)),
-            "EV": [95.0] + list(rng.uniform(85, 95, n - 1)),
-            "HR": [25] + list(rng.integers(5, 40, n - 1)),
-            "G": [80] + list(rng.integers(80, 162, n - 1)),
-            "PA": [300] + list(rng.integers(200, 600, n - 1)),
+            "brl_percent": [24.7] + list(rng.uniform(4, 18, n - 1)),
+            "avg_hit_speed": [95.4] + list(rng.uniform(85, 95, n - 1)),
+            "ev95percent": [58.2] + list(rng.uniform(30, 55, n - 1)),
+            "iso": [0.357] + list(rng.uniform(0.10, 0.35, n - 1)),
+            "HR": [54] + list(rng.integers(5, 40, n - 1)),
+            "G": [159] + list(rng.integers(80, 162, n - 1)),
         })
 
-        cole_row = {
-            "Name": "Gerrit Cole", "HR/9": 1.1, "HR/FB": 0.10, "xFIP": 3.20, "IP": 80.0
-        }
-        mock_pitcher_df = pd.DataFrame([cole_row])
+        mock_pitcher_df = pd.DataFrame([
+            {"Name": "Gerrit Cole", "HR/9": 1.1, "IP": 80.0}
+        ])
 
-        monkeypatch.setattr(_pybaseball, "batting_stats", lambda s, qual=50: mock_batter_df)
-        monkeypatch.setattr(_pybaseball, "pitching_stats", lambda s, qual=1: mock_pitcher_df)
-
-        # Mock network-dependent functions to avoid live API calls
+        # Monkeypatch fetch functions to avoid any live network calls
+        monkeypatch.setattr(sim_mod, "_fetch_batter_stats", lambda season: mock_batter_df)
+        monkeypatch.setattr(sim_mod, "_fetch_pitcher_stats", lambda season: mock_pitcher_df)
         monkeypatch.setattr(sim_mod, "_fetch_probable_starters", lambda today: {})
         monkeypatch.setattr(sim_mod, "_fetch_batter_hands", lambda: {})
 
@@ -311,9 +304,9 @@ class TestAddSimulation:
         assert "convergence" in result.columns
         # Aaron Judge should be matched with valid sim_prob in [0.01, 0.60]
         matched = result["sim_prob"].dropna()
-        assert len(matched) > 0, "No players were matched to FanGraphs data"
+        assert len(matched) > 0, "No players were matched to simulation data"
         assert matched.between(0.01, 0.60).all()
-        # With elite stats (Barrel 18, ISO .340), sim_prob should be non-trivial
+        # With elite Statcast stats, sim_prob should be non-trivial
         judge_prob = result.loc[result.index[0], "sim_prob"]
         assert 0.05 < judge_prob < 0.55, f"sim_prob {judge_prob:.3f} is implausibly outside 0.05-0.55"
 

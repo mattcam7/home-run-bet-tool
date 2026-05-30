@@ -53,6 +53,8 @@ _META: frozenset[str] = frozenset({
     "best_retail_odds", "best_retail_decimal", "best_retail_book",
     "ev_pct", "composite_score", "composite_z",
     "kelly_units", "stake_usd",
+    # Simulation columns — must NOT be treated as book odds columns
+    "sim_prob", "sim_edge", "convergence",
 })
 
 

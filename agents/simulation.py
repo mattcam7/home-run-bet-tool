@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 # Constants
 # ---------------------------------------------------------------------------
 
-BATTER_FEATURES = ["Barrel%", "ISO", "FB%", "Hard%", "EV"]
+BATTER_FEATURES = ["brl_percent", "avg_hit_speed", "ev95percent", "iso"]
 SEASON_WEIGHTS = {2024: 0.10, 2025: 0.30, 2026: 0.60}
 TRAIN_SEASONS = [2024, 2025]
 
@@ -161,11 +161,23 @@ def _cache_path(kind: str, season: int) -> Path:
     return CACHE_DIR / f"{kind}_{season}_{today}.csv"
 
 
+def _reverse_statcast_name(s: str) -> str:
+    """Convert 'Last, First' Statcast format to 'First Last' for matching."""
+    parts = s.split(", ", 1)
+    return f"{parts[1]} {parts[0]}" if len(parts) == 2 else s
+
+
 def _fetch_batter_stats(season: int) -> pd.DataFrame:
     """
-    Fetch FanGraphs batter stats via pybaseball with daily CSV cache.
-    qual=50 PA minimum; falls back to qual=1 if < 10 rows returned (mid-season).
-    Columns used: Name, HR, G, PA, Barrel%, ISO, FB%, Hard%, EV
+    Fetch batter stats from Baseball Savant (Statcast) and Baseball Reference.
+    No FanGraphs dependency.
+
+    Sources merged on player_id (MLBAM ID):
+      - statcast_batter_exitvelo_barrels → brl_percent, avg_hit_speed, ev95percent
+      - statcast_batter_expected_stats   → ba, slg → iso = slg - ba
+      - batting_stats_bref               → HR, G for hr_per_game training label
+
+    Returns DataFrame with: Name, brl_percent, avg_hit_speed, ev95percent, iso, HR, G
     """
     import pybaseball  # late import — not required for tests that mock
 
@@ -174,27 +186,58 @@ def _fetch_batter_stats(season: int) -> pd.DataFrame:
     if cache.exists():
         return pd.read_csv(cache)
 
+    # --- Statcast exit velocity / barrels (Baseball Savant) ---
     try:
-        df = pybaseball.batting_stats(season, qual=50)
+        ev_df = pybaseball.statcast_batter_exitvelo_barrels(season, minBBE=1)
     except Exception:
-        df = pd.DataFrame()
+        ev_df = pd.DataFrame()
 
-    if df.empty or len(df) < 10:
-        try:
-            df = pybaseball.batting_stats(season, qual=1)
-        except Exception:
-            df = pd.DataFrame()
+    # --- Statcast expected stats for ISO (Baseball Savant) ---
+    try:
+        xs_df = pybaseball.statcast_batter_expected_stats(season, minPA=1)
+    except Exception:
+        xs_df = pd.DataFrame()
 
-    if not df.empty:
-        df.to_csv(cache, index=False)
-    return df
+    if ev_df.empty or xs_df.empty:
+        return pd.DataFrame()
+
+    # Merge Statcast tables on player_id
+    ev_cols = ["player_id", "last_name, first_name", "brl_percent", "avg_hit_speed", "ev95percent"]
+    xs_cols = ["player_id", "ba", "slg"]
+    merged = ev_df[ev_cols].merge(xs_df[xs_cols], on="player_id", how="inner")
+    merged["iso"] = merged["slg"] - merged["ba"]
+
+    # Convert "Last, First" → "First Last" for name matching against OddsAPI names
+    merged["Name"] = merged["last_name, first_name"].apply(_reverse_statcast_name)
+
+    # --- Baseball Reference for HR, G (training label) ---
+    try:
+        bref_df = pybaseball.batting_stats_bref(season)
+    except Exception:
+        bref_df = pd.DataFrame()
+
+    if not bref_df.empty and "mlbID" in bref_df.columns:
+        bref_sub = bref_df[["mlbID", "HR", "G"]].copy()
+        bref_sub = bref_sub.rename(columns={"mlbID": "player_id"})
+        merged = merged.merge(bref_sub, on="player_id", how="left")
+    else:
+        merged["HR"] = pd.NA
+        merged["G"] = pd.NA
+
+    result_cols = ["Name", "player_id", "brl_percent", "avg_hit_speed", "ev95percent", "iso", "HR", "G"]
+    result = merged[result_cols].copy()
+    result = result.dropna(subset=["brl_percent", "avg_hit_speed", "ev95percent", "iso"])
+
+    if not result.empty:
+        result.to_csv(cache, index=False)
+    return result
 
 
 def _fetch_pitcher_stats(season: int) -> pd.DataFrame:
     """
-    Fetch FanGraphs pitcher stats via pybaseball with daily CSV cache.
-    qual=1 IP (include any pitcher with any data; filter by IP later).
-    Columns used: Name, IP, HR/9, HR/FB, xFIP
+    Fetch pitcher stats from Baseball Reference (no FanGraphs dependency).
+    Computes HR/9 = HR / (IP / 9) for pitcher_factor.
+    Columns returned: Name, IP, HR/9, mlbID
     """
     import pybaseball
 
@@ -204,12 +247,20 @@ def _fetch_pitcher_stats(season: int) -> pd.DataFrame:
         return pd.read_csv(cache)
 
     try:
-        df = pybaseball.pitching_stats(season, qual=1)
+        df = pybaseball.pitching_stats_bref(season)
     except Exception:
         df = pd.DataFrame()
 
-    if not df.empty:
+    if not df.empty and "HR" in df.columns and "IP" in df.columns:
+        df = df.copy()
+        df["HR/9"] = df.apply(
+            lambda r: (float(r["HR"]) / (float(r["IP"]) / 9.0))
+            if pd.notna(r["IP"]) and float(r["IP"]) > 0 and pd.notna(r["HR"])
+            else PITCHER_LEAGUE_HR9,
+            axis=1,
+        )
         df.to_csv(cache, index=False)
+
     return df
 
 
@@ -349,7 +400,7 @@ def _get_or_train_model(batter_dfs: dict[int, pd.DataFrame]) -> HRRateModel:
             return model
 
     # Retrain
-    print("[simulation] Training model on 2024-2025 FanGraphs data...")
+    print("[simulation] Training model on 2024-2025 Statcast + Baseball Reference data...")
     frames = []
     for season in TRAIN_SEASONS:
         df = batter_dfs.get(season)
