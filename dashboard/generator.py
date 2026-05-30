@@ -15,6 +15,8 @@ META_COLS = {
     "best_retail_odds", "best_retail_decimal", "best_retail_book",
     "ev_pct", "composite_score", "composite_z",
     "kelly_units", "stake_usd",
+    # Simulation columns — must NOT appear as book columns in the EV table
+    "sim_prob", "sim_edge", "convergence",
 }
 
 HTML_TEMPLATE = """<!DOCTYPE html>
@@ -54,6 +56,22 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     .parlay-legs-list{margin:0;padding-left:18px;font-size:.9em;line-height:1.8}
     .flag-bol{background:#fff3cd;color:#856404;border-radius:3px;padding:1px 5px;font-size:.78em;margin-left:4px}
     .flag-book{background:#cfe2ff;color:#0a58ca;border-radius:3px;padding:1px 5px;font-size:.78em;margin-left:4px}
+    #sim-section{margin-top:32px;background:#fff;padding:20px 24px;box-shadow:0 1px 4px rgba(0,0,0,.1);border-radius:4px}
+    #sim-section h2{margin-top:0;color:#495057}
+    .sim-summary{display:flex;gap:16px;margin-bottom:16px}
+    .sim-box{flex:1;border-radius:6px;padding:12px 16px;text-align:center}
+    .sim-box-agree{background:#d4edda;border:1px solid #c3e6cb}
+    .sim-box-bullish{background:#cfe2ff;border:1px solid #b6d4fe}
+    .sim-box-bearish{background:#f8d7da;border:1px solid #f5c6cb}
+    .sim-box-count{font-size:2em;font-weight:700}
+    .sim-box-label{font-size:.85em;color:#495057}
+    #sim-table{border-collapse:collapse;width:100%;font-size:.9em}
+    #sim-table th{background:#343a40;color:#fff;padding:10px 8px;cursor:pointer;text-align:left;white-space:nowrap;user-select:none}
+    #sim-table th:hover{background:#495057}
+    #sim-table td{padding:8px;border-bottom:1px solid #dee2e6;white-space:nowrap}
+    tr.sim-bullish-row{background:#d4edda}
+    tr.sim-agree-row{background:#fff3cd}
+    tr.sim-bearish-row td{color:#999}
   </style>
 </head>
 <body>
@@ -79,6 +97,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     </tr></thead>
     <tbody id="table-body"></tbody>
   </table>
+  __SIM_SECTION__
   <div id="suggested-parlays">
     <h2>Suggested Longshot Parlays</h2>
     <p style="color:#6c757d;font-size:.9em">Same-book &middot; +EV legs at +500 to +1500 &middot; no same-game &middot; ranked by combined EV</p>
@@ -91,6 +110,8 @@ HTML_TEMPLATE = """<!DOCTYPE html>
   </div>
   <script>
     const DATA=__DATA__;
+    const SIM_DATA=__SIM_DATA__;
+    let simSortKey='sim_edge',simSortDir=-1;
     const BOOKS=__BOOK_NAMES__;
     const PARLAYS=__PARLAYS__;
     let sortKey='composite_z',sortDir=-1,minEv=-100;
@@ -130,6 +151,36 @@ HTML_TEMPLATE = """<!DOCTYPE html>
           <td>${r.stake}</td>
           <td>${fmtZ(r.composite_z)}</td>
         </tr>`).join('');
+    }
+    function sortSim(k){if(simSortKey===k)simSortDir*=-1;else{simSortKey=k;simSortDir=-1;}renderSimTable();}
+    function renderSimTable(){
+      const tbody=document.getElementById('sim-table-body');
+      if(!tbody)return;
+      if(!SIM_DATA||!SIM_DATA.length){
+        if(tbody)tbody.innerHTML='<tr><td colspan="10" style="color:#999;font-style:italic;text-align:center">No simulation data.</td></tr>';
+        return;
+      }
+      const sorted=[...SIM_DATA].sort((a,b)=>{
+        const av=a[simSortKey],bv=b[simSortKey];
+        if(typeof av==='string')return simSortDir*av.localeCompare(bv);
+        if(av==null&&bv==null)return 0;if(av==null)return 1;if(bv==null)return -1;
+        return simSortDir*(av-bv);
+      });
+      tbody.innerHTML=sorted.filter(r=>r.ev_pct>=minEv).map(r=>{
+        let cls='';
+        if(r.sim_edge>3&&r.ev_pct>0)cls='sim-bullish-row';
+        else if(Math.abs(r.sim_edge)<=3&&r.ev_pct>0)cls='sim-agree-row';
+        else if(r.sim_edge<-3)cls='sim-bearish-row';
+        const edgeStr=(r.sim_edge>=0?'+':'')+r.sim_edge.toFixed(1)+'%';
+        const convBadge=r.convergence==='AGREE'?'<span style="color:#155724;font-weight:600">&#10003;AGREE</span>':'<span style="color:#721c24">DIVERGE</span>';
+        return`<tr class="${cls}">
+          <td>${r.player}</td><td>${r.team}</td><td>${r.game}</td>
+          <td>${r.sim_prob.toFixed(1)}%</td><td>${r.pin_prob.toFixed(1)}%</td>
+          <td>${edgeStr}</td><td>${convBadge}</td>
+          <td>${fmtOdds(r.best_retail_odds)}</td><td>${fmtPct(r.ev_pct)}</td>
+          <td>${r.stake}</td>
+        </tr>`;
+      }).join('');
     }
     function sortBy(k){if(sortKey===k)sortDir*=-1;else{sortKey=k;sortDir=-1;}renderTable();}
     function applyFilter(v){minEv=v;document.getElementById('ev-label').textContent=v+'%';renderTable();}
@@ -204,9 +255,53 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     }
     renderTable();
     renderParlays();
+    renderSimTable();
   </script>
 </body>
 </html>"""
+
+
+_SIM_COLS = {"sim_prob", "sim_edge", "convergence"}
+
+_SIM_TABLE_HTML = """<div id="sim-section">
+  <h2>Simulation Analysis</h2>
+  <div class="sim-summary">
+    <div class="sim-box sim-box-agree">
+      <div class="sim-box-count">{n_agree}</div>
+      <div class="sim-box-label">&#127823; Convergence plays<br><small>+EV &amp; |sim edge| &lt;3%</small></div>
+    </div>
+    <div class="sim-box sim-box-bullish">
+      <div class="sim-box-count">{n_bullish}</div>
+      <div class="sim-box-label">&#128309; Sim bullish<br><small>sim &gt; pin by &gt;3%</small></div>
+    </div>
+    <div class="sim-box sim-box-bearish">
+      <div class="sim-box-count">{n_bearish}</div>
+      <div class="sim-box-label">&#128308; Sim bearish<br><small>sim &lt; pin by &gt;3%</small></div>
+    </div>
+  </div>
+  <p style="color:#6c757d;font-size:.9em">Sorted by sim edge &darr; &nbsp;|&nbsp; Green=bullish+EV &nbsp; Yellow=convergence+EV &nbsp; Gray=bearish</p>
+  <table id="sim-table">
+    <thead><tr>
+      <th onclick="sortSim('player')">Player</th>
+      <th onclick="sortSim('team')">Team</th>
+      <th onclick="sortSim('game')">Game</th>
+      <th onclick="sortSim('sim_prob')">Sim %</th>
+      <th onclick="sortSim('pin_prob')">Pin %</th>
+      <th onclick="sortSim('sim_edge')">Sim Edge</th>
+      <th>Signal</th>
+      <th onclick="sortSim('best_retail_odds')">Best Retail</th>
+      <th onclick="sortSim('ev_pct')">EV%</th>
+      <th>Stake</th>
+    </tr></thead>
+    <tbody id="sim-table-body"></tbody>
+  </table>
+</div>"""
+
+_SIM_UNAVAILABLE_HTML = """<div id="sim-section">
+  <h2>Simulation Analysis</h2>
+  <p style="color:#6c757d;font-style:italic">Simulation data unavailable for this slate.
+  Check <code>data/sim_unmatched.log</code> for details.</p>
+</div>"""
 
 
 def generate_dashboard(
@@ -242,6 +337,39 @@ def generate_dashboard(
             record[col] = int(val) if pd.notna(val) else None
         records.append(record)
 
+    # Build simulation section
+    if _SIM_COLS.issubset(final_df.columns) and final_df["sim_prob"].notna().any():
+        sim_records = []
+        for _, row in final_df.iterrows():
+            if pd.isna(row.get("sim_prob")):
+                continue
+            sim_records.append({
+                "player": row["player_name"],
+                "team": row.get("team", ""),
+                "game": row.get("game", ""),
+                "sim_prob": round(float(row["sim_prob"]) * 100, 1),
+                "pin_prob": round(float(row["pinnacle_prob"]) * 100, 1),
+                "sim_edge": round(float(row["sim_edge"]) * 100, 1),
+                "convergence": row["convergence"],
+                "best_retail_odds": int(row["best_retail_odds"]),
+                "ev_pct": round(float(row["ev_pct"]) * 100, 2),
+                "stake": (
+                    f'{row["kelly_units"]:g}u (${row["stake_usd"]:,.0f})'
+                    if row["kelly_units"] > 0 else "0u"
+                ),
+            })
+        n_agree = sum(
+            1 for r in sim_records if r["convergence"] == "AGREE" and r["ev_pct"] > 0
+        )
+        n_bullish = sum(1 for r in sim_records if r["sim_edge"] > 3)
+        n_bearish = sum(1 for r in sim_records if r["sim_edge"] < -3)
+        sim_section_html = _SIM_TABLE_HTML.format(
+            n_agree=n_agree, n_bullish=n_bullish, n_bearish=n_bearish
+        )
+    else:
+        sim_records = []
+        sim_section_html = _SIM_UNAVAILABLE_HTML
+
     timestamp = datetime.now(ET).strftime("%Y-%m-%d %I:%M %p ET")
     n_players = len(final_df)
     n_positive = int((final_df["ev_pct"] > 0).sum())
@@ -256,6 +384,8 @@ def generate_dashboard(
         .replace("__TIMESTAMP__", timestamp)
         .replace("__N_PLAYERS__", str(n_players))
         .replace("__N_POSITIVE__", str(n_positive))
+        .replace("__SIM_DATA__", json.dumps(sim_records))
+        .replace("__SIM_SECTION__", sim_section_html)
     )
 
     with open(output_path, "w", encoding="utf-8") as f:
