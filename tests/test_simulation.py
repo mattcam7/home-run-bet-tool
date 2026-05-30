@@ -183,3 +183,86 @@ class TestHRRateModel:
         model = HRRateModel()
         with pytest.raises(RuntimeError, match="not fitted"):
             model.predict({"Barrel%": 10.0, "ISO": 0.2, "FB%": 38.0, "Hard%": 42.0, "EV": 90.0})
+
+
+from agents.simulation import (
+    _get_park_factor,
+    _get_platoon_factor,
+    add_simulation,
+)
+
+
+class TestGetParkFactor:
+    def test_known_home_team_returns_factor(self):
+        park_factors = {"BOS": 1.065, "SFG": 0.828}
+        result = _get_park_factor("Texas Rangers @ Boston Red Sox", park_factors)
+        assert abs(result - 1.065) < 0.001
+
+    def test_unknown_home_team_returns_neutral(self):
+        park_factors = {"BOS": 1.065}
+        result = _get_park_factor("Texas Rangers @ Unknown Team", park_factors)
+        assert result == 1.0
+
+    def test_malformed_game_string_returns_neutral(self):
+        result = _get_park_factor("", {})
+        assert result == 1.0
+
+    def test_oracle_park_suppresses_hr(self):
+        park_factors = {"SFG": 0.828}
+        result = _get_park_factor("Los Angeles Dodgers @ San Francisco Giants", park_factors)
+        assert result < 1.0
+
+    def test_coors_field_boosts_hr(self):
+        park_factors = {"COL": 1.198}
+        result = _get_park_factor("Los Angeles Dodgers @ Colorado Rockies", park_factors)
+        assert result > 1.0
+
+
+class TestGetPlatoonFactor:
+    def test_opposite_hand_favorable(self):
+        assert _get_platoon_factor("L", "R") == 1.05
+        assert _get_platoon_factor("R", "L") == 1.05
+
+    def test_same_hand_unfavorable(self):
+        assert _get_platoon_factor("L", "L") == 0.95
+        assert _get_platoon_factor("R", "R") == 0.95
+
+    def test_switch_hitter_neutral(self):
+        assert _get_platoon_factor("S", "R") == 1.0
+        assert _get_platoon_factor("S", "L") == 1.0
+
+    def test_unknown_hand_neutral(self):
+        assert _get_platoon_factor("", "R") == 1.0
+        assert _get_platoon_factor("R", "") == 1.0
+        assert _get_platoon_factor("", "") == 1.0
+
+
+class TestAddSimulation:
+    def _make_final_df(self) -> pd.DataFrame:
+        from datetime import datetime, timezone
+        return pd.DataFrame([
+            {
+                "player_name": "Aaron Judge",
+                "team": "NYY",
+                "game": "Texas Rangers @ New York Yankees",
+                "commence_time": datetime(2026, 5, 30, 20, 0, tzinfo=timezone.utc),
+                "pinnacle_prob": 0.18,
+                "pinnacle_odds": 400,
+                "sharp_anchor": "pinnacle",
+                "best_retail_odds": 450,
+                "best_retail_decimal": 5.5,
+                "ev_pct": 0.05,
+                "composite_score": 0.009,
+                "composite_z": 1.2,
+                "kelly_units": 0.5,
+                "stake_usd": 12.5,
+            }
+        ])
+
+    def test_returns_df_unchanged_on_import_error(self, monkeypatch):
+        """If pybaseball is unavailable, add_simulation returns df unchanged."""
+        import sys
+        monkeypatch.setitem(sys.modules, "pybaseball", None)
+        df = self._make_final_df()
+        result = add_simulation(df)
+        assert list(result.columns) == list(df.columns)

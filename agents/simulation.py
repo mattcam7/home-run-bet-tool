@@ -354,3 +354,217 @@ def _get_or_train_model(batter_dfs: dict[int, pd.DataFrame]) -> HRRateModel:
     model.save(MODEL_PATH)
     print(f"[simulation] Model trained on {len(train_df)} rows and saved to {MODEL_PATH}.")
     return model
+
+
+# ---------------------------------------------------------------------------
+# Multiplier functions
+# ---------------------------------------------------------------------------
+
+
+def _get_park_factor(game: str, park_factors: dict) -> float:
+    """Extract home team from 'Away @ Home' game string, return HR park factor."""
+    if " @ " not in game:
+        return 1.0
+    home_name = game.split(" @ ", 1)[1].strip()
+    abbrev = TEAM_NAME_TO_ABBREV.get(home_name, "")
+    return park_factors.get(abbrev, 1.0)
+
+
+def _fetch_probable_starters(today: str) -> dict:
+    """
+    Returns {team_abbrev: {"name": str, "hand": "R"|"L"|""}} for both home and
+    away starters in today's schedule via MLB Stats API.
+    Returns empty dict on any error.
+    """
+    try:
+        resp = requests.get(
+            "https://statsapi.mlb.com/api/v1/schedule",
+            params={"sportId": 1, "date": today, "hydrate": "probablePitcher"},
+            timeout=15,
+        )
+        resp.raise_for_status()
+        result: dict = {}
+        for date_entry in resp.json().get("dates", []):
+            for game in date_entry.get("games", []):
+                for side in ("home", "away"):
+                    team_data = game.get("teams", {}).get(side, {})
+                    abbrev = team_data.get("team", {}).get("abbreviation", "")
+                    prob = team_data.get("probablePitcher", {})
+                    if abbrev and prob:
+                        result[abbrev] = {
+                            "name": prob.get("fullName", ""),
+                            "hand": prob.get("pitchHand", {}).get("code", ""),
+                        }
+        return result
+    except Exception as exc:
+        logger.warning("[simulation] Could not fetch probable starters: %s", exc)
+        return {}
+
+
+def _fetch_batter_hands() -> dict:
+    """
+    Returns {normalized_name: "R"|"L"|"S"} from MLB Stats API.
+    Returns empty dict on any error.
+    """
+    try:
+        resp = requests.get(
+            "https://statsapi.mlb.com/api/v1/sports/1/players",
+            params={"season": datetime.now(timezone.utc).year, "gameType": "R"},
+            timeout=15,
+        )
+        resp.raise_for_status()
+        result: dict = {}
+        for player in resp.json().get("people", []):
+            name = _normalize_name(player.get("fullName", ""))
+            hand = player.get("batSide", {}).get("code", "")
+            if name and hand:
+                result[name] = hand
+        return result
+    except Exception as exc:
+        logger.warning("[simulation] Could not fetch batter hands: %s", exc)
+        return {}
+
+
+def _get_pitcher_factor(
+    row: pd.Series,
+    starters: dict,
+    pitcher_dfs: dict[int, pd.DataFrame],
+) -> tuple[float, str, str]:
+    """
+    Returns (pitcher_factor, opposing_pitcher_name, pitcher_hand).
+    pitcher_factor = (pitcher_HR/9) / PITCHER_LEAGUE_HR9, capped [0.5, 2.0].
+    Defaults to (1.0, "", "") when data is unavailable.
+    """
+    game = str(row.get("game", ""))
+    batter_team = str(row.get("team", ""))
+
+    if " @ " not in game or not batter_team:
+        return 1.0, "", ""
+
+    away_name, home_name = game.split(" @ ", 1)
+    away_abbrev = TEAM_NAME_TO_ABBREV.get(away_name.strip(), "")
+    home_abbrev = TEAM_NAME_TO_ABBREV.get(home_name.strip(), "")
+
+    # Batter faces the OPPOSING team's starter
+    if batter_team == home_abbrev:
+        opposing_abbrev = away_abbrev
+    elif batter_team == away_abbrev:
+        opposing_abbrev = home_abbrev
+    else:
+        return 1.0, "", ""
+
+    starter_info = starters.get(opposing_abbrev, {})
+    pitcher_name = starter_info.get("name", "")
+    pitcher_hand = starter_info.get("hand", "")
+
+    if not pitcher_name:
+        return 1.0, pitcher_name, pitcher_hand
+
+    pitcher_stats = _get_pitcher_stats_by_name(pitcher_name, pitcher_dfs)
+    if pitcher_stats is None or pitcher_stats.get("IP", 0) < 5:
+        # Rookie or insufficient sample — default to league neutral
+        return 1.0, pitcher_name, pitcher_hand
+
+    hr9 = pitcher_stats.get("HR/9", PITCHER_LEAGUE_HR9)
+    factor = hr9 / PITCHER_LEAGUE_HR9
+    factor = max(0.5, min(2.0, factor))
+    return factor, pitcher_name, pitcher_hand
+
+
+def _get_platoon_factor(batter_hand: str, pitcher_hand: str) -> float:
+    """
+    Opposite-hand matchup (LvR or RvL) = favorable = 1.05.
+    Same-hand matchup (LvL or RvR) = unfavorable = 0.95.
+    Switch hitter (S) or either hand unknown = neutral = 1.0.
+    """
+    if not batter_hand or not pitcher_hand or batter_hand == "S":
+        return 1.0
+    return 1.05 if batter_hand != pitcher_hand else 0.95
+
+
+# ---------------------------------------------------------------------------
+# Public interface
+# ---------------------------------------------------------------------------
+
+
+def add_simulation(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Append simulation columns to final_df and return it.
+
+    Added columns:
+        sim_prob    — model-derived P(HR today), clipped to [0.01, 0.60]
+        sim_edge    — sim_prob - pinnacle_prob (positive = sim more bullish)
+        convergence — "AGREE" if |sim_edge| < 0.03, else "DIVERGE"
+
+    Returns df unchanged if pybaseball is unavailable or any error occurs.
+    """
+    try:
+        import pybaseball  # noqa: F401 — verify available; actual calls via _fetch_*
+    except (ImportError, TypeError):
+        logger.warning("[simulation] pybaseball not available — skipping simulation.")
+        return df
+
+    try:
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+        # Fetch all batter + pitcher stats (daily cached)
+        all_seasons = [2024, 2025, 2026]
+        batter_dfs = {s: _fetch_batter_stats(s) for s in all_seasons}
+        pitcher_dfs = {s: _fetch_pitcher_stats(s) for s in all_seasons}
+
+        # Probable starters + batter handedness (best-effort)
+        starters = _fetch_probable_starters(today)
+        batter_hands = _fetch_batter_hands()
+
+        # Park factors
+        with PARK_FACTORS_PATH.open(encoding="utf-8") as f:
+            park_factors = json.load(f)
+
+        # Get/train model
+        model = _get_or_train_model(batter_dfs)
+
+        sim_probs: list[float | None] = []
+        for _, row in df.iterrows():
+            stats = _get_weighted_batter_stats(row["player_name"], batter_dfs)
+            if stats is None:
+                sim_probs.append(None)
+                continue
+
+            base_prob = model.predict(stats)
+
+            park_factor = _get_park_factor(row.get("game", ""), park_factors)
+            pitcher_factor, _pitcher_name, pitcher_hand = _get_pitcher_factor(
+                row, starters, pitcher_dfs
+            )
+
+            norm_name = _normalize_name(row["player_name"])
+            batter_hand = batter_hands.get(norm_name, "")
+            platoon_factor = _get_platoon_factor(batter_hand, pitcher_hand)
+
+            sim_prob = base_prob * park_factor * pitcher_factor * platoon_factor
+            sim_prob = max(0.01, min(0.60, sim_prob))
+            sim_probs.append(sim_prob)
+
+        df = df.copy()
+        df["sim_prob"] = sim_probs
+        df["sim_edge"] = df.apply(
+            lambda r: (r["sim_prob"] - r["pinnacle_prob"]) if pd.notna(r["sim_prob"]) else None,
+            axis=1,
+        )
+        df["convergence"] = df["sim_edge"].apply(
+            lambda e: "AGREE" if pd.notna(e) and abs(e) < 0.03 else "DIVERGE"
+        )
+
+        matched = df["sim_prob"].notna().sum()
+        total = len(df)
+        print(
+            f"[simulation] Matched {matched}/{total} players "
+            f"({matched/total*100:.0f}% match rate). "
+            f"See {UNMATCHED_LOG} for misses."
+        )
+        return df
+
+    except Exception as exc:
+        logger.exception("[simulation] Unexpected error — returning df unchanged.")
+        print(f"[simulation] WARNING: {exc}. Dashboard will show simulation as unavailable.")
+        return df
