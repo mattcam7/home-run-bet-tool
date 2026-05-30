@@ -20,6 +20,18 @@ When joining, matching, or looking up players (or any entity) across data source
 - If a data source doesn't expose an ID, document the limitation explicitly and apply a plausibility guard rather than silently writing bad data
 - When adding new data pipeline joins, the first question to ask is: "what ID am I joining on?" — if the answer is a name string, flag it as a known risk and add a guard
 
+## Known Limitation: Simulation Agent Name Matching
+
+`agents/simulation.py` joins player data across OddsAPI (player props) and FanGraphs/pybaseball (batter/pitcher stats). Neither source exposes a shared numeric player ID for props markets, making string matching unavoidable.
+
+**Mitigations in place:**
+- Names normalized both sides: title case, accent stripped, suffixes (Jr./III) removed
+- Exact match attempted first; fuzzy (rapidfuzz token_sort_ratio ≥ 85) only on miss
+- Every unmatched player logged to `data/sim_unmatched.log` with timestamp — never silently dropped
+- Players with no stats match are excluded from sim predictions (shown as None in sim_prob)
+
+**Residual risk:** Duplicate last names or unusual Unicode variants could produce wrong matches. Monitor `data/sim_unmatched.log` after each run. This limitation will be resolved in v2 when game-log Statcast data is used (Statcast exposes MLBAM numeric IDs).
+
 ## Never Assume — Always Verify
 
 Before referencing any file, script, command, endpoint, or function name, confirm it exists first using Glob or Grep. Never tell the user to run a file, call a function, or use a command that hasn't been verified to exist in the codebase. Assumptions about file names, script entry points, or CLI flags that turn out to be wrong waste the user's time and erode trust.
@@ -59,3 +71,15 @@ Add under a ## Domain Rules or ## Betting vs DFS section in CLAUDE.md\n\nDisting
 Add under a ## Scheduling / Automation section in CLAUDE.md\n\nFor Windows scheduled tasks, never use 'schtasks /SC MINUTE' alone (one-shot trigger); use /SC MINUTE with /MO and verify recurrence, or prefer a robust scheduler. Always validate the task actually recurs before relying on it.
 
 Add near the top under ## Project Overview and a ## Validation subsection\n\nThis is a Python sports analytics codebase (golf DFS, home run betting, NHL props). Always run model validation and suspend/flag bad markets after changing pricing or props logic.
+
+## Insights Suggestions 5/30
+
+Add a new top-level section '## Sports Analytics Context' near the top of CLAUDE.md so it's loaded as project context for every session.\n\n## Sports Analytics Context
+- DFS (GPP/cash) value is DISTINCT from betting EV/CLV. Never conflate them: a player can be a fade for outright bets but a strong DFS play due to ownership leverage, salary, and ceiling.
+- For betting tools: always track CLV (closing line value) and validate model outputs before recommending bets; auto-suspend markets that fail sanity checks.
+- For DFS tools: surface cut%, leverage score, ownership projection, and salary value alongside raw projections.
+
+Add under a new '## Windows Task Scheduling' section, since PowerShell is in the top tools and scheduling is recurring.\n\n## Windows Task Scheduling
+- Do NOT use `schtasks /SC MINUTE` as a one-shot — verify recurrence with `schtasks /Query /TN <name> /V /FO LIST` after creating any scheduled task.
+- Prefer creating tasks via XML definition or PowerShell `Register-ScheduledTask` with explicit trigger repetition intervals.
+- After scheduling, always confirm the next 2-3 run times are populated before considering the task 'done'.
