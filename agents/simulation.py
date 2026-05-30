@@ -557,11 +557,12 @@ def add_simulation(df: pd.DataFrame) -> pd.DataFrame:
 
         matched = df["sim_prob"].notna().sum()
         total = len(df)
-        print(
-            f"[simulation] Matched {matched}/{total} players "
-            f"({matched/total*100:.0f}% match rate). "
-            f"See {UNMATCHED_LOG} for misses."
-        )
+        if total > 0:
+            print(
+                f"[simulation] Matched {matched}/{total} players "
+                f"({matched/total*100:.0f}% match rate). "
+                f"See {UNMATCHED_LOG} for misses."
+            )
         return df
 
     except Exception as exc:

@@ -266,3 +266,42 @@ class TestAddSimulation:
         df = self._make_final_df()
         result = add_simulation(df)
         assert list(result.columns) == list(df.columns)
+
+    def test_adds_sim_columns_when_data_available(self, tmp_path, monkeypatch):
+        """With mocked pybaseball, sim columns are added and sim_prob is in [0.01, 0.60]."""
+        import pybaseball as _pybaseball
+
+        monkeypatch.setattr(
+            "agents.simulation.CACHE_DIR", tmp_path / "sim_cache"
+        )
+        monkeypatch.setattr(
+            "agents.simulation.MODEL_PATH", tmp_path / "sim_model.pkl"
+        )
+        monkeypatch.setattr(
+            "agents.simulation.UNMATCHED_LOG", tmp_path / "sim_unmatched.log"
+        )
+        monkeypatch.setattr(
+            "agents.simulation.PARK_FACTORS_PATH",
+            __import__("pathlib").Path("data/park_factors.json")
+        )
+
+        judge_row = {
+            "Name": "Aaron Judge", "Barrel%": 18.0, "ISO": 0.340,
+            "FB%": 42.0, "Hard%": 58.0, "EV": 95.0, "HR": 25, "G": 80, "PA": 300
+        }
+        mock_batter_df = pd.DataFrame([judge_row])
+
+        cole_row = {
+            "Name": "Gerrit Cole", "HR/9": 1.1, "HR/FB": 0.10, "xFIP": 3.20, "IP": 80.0
+        }
+        mock_pitcher_df = pd.DataFrame([cole_row])
+
+        monkeypatch.setattr(_pybaseball, "batting_stats", lambda s, qual=50: mock_batter_df)
+        monkeypatch.setattr(_pybaseball, "pitching_stats", lambda s, qual=1: mock_pitcher_df)
+
+        df = self._make_final_df()
+        result = add_simulation(df)
+        assert "sim_prob" in result.columns
+        assert "sim_edge" in result.columns
+        assert "convergence" in result.columns
+        assert result["sim_prob"].dropna().between(0.01, 0.60).all()
