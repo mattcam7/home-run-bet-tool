@@ -48,5 +48,20 @@ AGENT 4 - Audit Agent
 **Outputs:** This agent should return a finalized report that shows how the current version of our project can be improved with actionable feedback, clear paths, and defined KPIs / goals to try and hit
 **Notes:** This agent should always work through the lens of an expert sports bettor.  Ensure any suggestions come through this lens and can actually provide value.  There is a world where we may want to sell a finalized version of this product. 
 
+AGENT 5 - KPI Tracking Agent
+**Purpose:** Similar to the audit agent, this should run through all the key dependencies on the project but also look through the chat and look for better ways to implement ideas and tracking of bets.  This should also identify any key context missing that should be added to our tool.
+**Schedule:** When invoked and please note this should NOT be a typical agent called when we run our HR betting dashboard scrapes
+**Inputs:** The KPI Tracking Agent should assess the chat and betting results (as well as looking at ways to be more efficient via the /insights command.)- Also use brainstorming superpowers to ingest all data and come up with ideas to advance the project.
+**Outputs:** The agent should return a finalized analysis and report to the main agent.  I would like it in HTML format and easily readible with solid visuals and clear callouts.
+**Notes:** This agent should work through the lens of "How can we make this tool better to truly create high EV bets as well as productionalize something to sell to the public".  Scrape external sites and use their visuals if needed.  We should be presenting EV on a percentage basis.
+
+AGENT 6 - Simulation Agent
+**Purpose:** The simulation agent is a new agent that should scrape MLB statistics as best as possible and create or propose modeling techniques that help simulate the likelihood of MLB players hitting home runs in their respective games.
+**Schedule:** This agent should be an addition to the typical HR betting dashboard scraper.  We should be using sharp lines, statistics, and linear models to simulate outcomes on an AT BAT scale and provide the likelihood of a player hitting a home run.
+**Inputs:** This agent should use external sites such as baseball reference or other sites (potentially fangraphs) to take in adcvanced data, run linear regressions (or something the agent thinks is worthwhile), to figure out which variables are best to assess home run likelihood in a single game.
+**Outputs:** This agent should present a report to the main agent that shows our simulation likelihood result, expected value of betting lines presented, and grades / weights around specific variables to solidify and prove the simulation is in good standing.
+**Notes:** I realize this is likely and intensive agent process that will require a solid amout of thinking, use the model you see fit and prompt me for context if you need it.  
+
+
 ## WHEN TO RUN ##
 **We should run through all agent proccesses through a keyphrase when called, and ensure all data is collected properly through the CLAUDE.md rules**
