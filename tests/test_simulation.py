@@ -109,3 +109,77 @@ class TestGetPitcherStatsByName:
         pitcher_dfs = {2025: self._make_pitcher_df("Gerrit Cole", hr9=1.5)}
         result = _get_pitcher_stats_by_name("Gerrit A. Cole", pitcher_dfs)
         assert result is not None
+
+
+import numpy as np
+from agents.simulation import HRRateModel, BATTER_FEATURES
+
+
+def _make_training_df(n: int = 50) -> pd.DataFrame:
+    """
+    Synthetic training data with plausible feature ranges and realistic signal.
+    hr_per_game is derived from features (like real data) so that Ridge can
+    learn positive coefficients for power metrics (Barrel%, ISO, etc.).
+    """
+    rng = np.random.default_rng(42)
+    barrel = rng.uniform(4, 18, n)
+    iso = rng.uniform(0.10, 0.35, n)
+    fb = rng.uniform(25, 55, n)
+    hard = rng.uniform(30, 55, n)
+    ev = rng.uniform(85, 95, n)
+    # hr_per_game has a realistic positive relationship with power metrics
+    hr_per_game = (
+        0.004 * barrel
+        + 0.15 * iso
+        + 0.001 * fb
+        + 0.001 * hard
+        + 0.001 * ev
+        + rng.normal(0, 0.005, n)  # small noise
+    ).clip(0)
+    data = {
+        "Barrel%": barrel,
+        "ISO": iso,
+        "FB%": fb,
+        "Hard%": hard,
+        "EV": ev,
+        "HR": (hr_per_game * 140).astype(int),
+        "G": np.full(n, 140),
+        "hr_per_game": hr_per_game,
+    }
+    return pd.DataFrame(data)
+
+
+class TestHRRateModel:
+    def test_fit_and_predict_returns_nonneg_float(self):
+        model = HRRateModel()
+        train_df = _make_training_df(50)
+        model.fit(train_df)
+        features = {"Barrel%": 10.0, "ISO": 0.22, "FB%": 38.0, "Hard%": 44.0, "EV": 90.0}
+        result = model.predict(features)
+        assert isinstance(result, float)
+        assert result >= 0.0
+
+    def test_higher_barrel_pct_predicts_higher_hr_rate(self):
+        model = HRRateModel()
+        train_df = _make_training_df(200)
+        model.fit(train_df)
+        base = {"ISO": 0.22, "FB%": 38.0, "Hard%": 44.0, "EV": 90.0}
+        low = model.predict({**base, "Barrel%": 4.0})
+        high = model.predict({**base, "Barrel%": 18.0})
+        assert high > low
+
+    def test_save_and_load_round_trip(self, tmp_path):
+        model = HRRateModel()
+        train_df = _make_training_df(50)
+        model.fit(train_df)
+        path = str(tmp_path / "model.pkl")
+        model.save(path)
+        model2 = HRRateModel()
+        model2.load(path)
+        features = {"Barrel%": 10.0, "ISO": 0.22, "FB%": 38.0, "Hard%": 44.0, "EV": 90.0}
+        assert abs(model.predict(features) - model2.predict(features)) < 1e-9
+
+    def test_predict_before_fit_raises(self):
+        model = HRRateModel()
+        with pytest.raises(RuntimeError, match="not fitted"):
+            model.predict({"Barrel%": 10.0, "ISO": 0.2, "FB%": 38.0, "Hard%": 42.0, "EV": 90.0})

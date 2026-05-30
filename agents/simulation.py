@@ -262,3 +262,95 @@ def _get_pitcher_stats_by_name(
             "xFIP": float(row["xFIP"]) if "xFIP" in row.index and pd.notna(row["xFIP"]) else None,
         }
     return None
+
+
+# ---------------------------------------------------------------------------
+# HRRateModel — Ridge regression on batter contact stats
+# ---------------------------------------------------------------------------
+
+
+class HRRateModel:
+    """
+    Ridge-regularized linear regression model predicting hr_per_game.
+    Features: Barrel%, ISO, FB%, Hard%, EV (avg exit velocity).
+    Interface stable for v2 upgrade (swap Ridge for XGBoost without changing callers).
+    """
+
+    def __init__(self) -> None:
+        self._pipe: Pipeline | None = None
+
+    def fit(self, df: pd.DataFrame) -> None:
+        """
+        Train on a DataFrame that contains BATTER_FEATURES and 'hr_per_game' column.
+        Rows with any NaN in features or label are dropped automatically.
+        """
+        train = df.dropna(subset=BATTER_FEATURES + ["hr_per_game"])
+        X = train[BATTER_FEATURES]
+        y = train["hr_per_game"]
+        self._pipe = Pipeline([
+            ("scaler", StandardScaler()),
+            ("ridge", Ridge(alpha=1.0)),
+        ])
+        self._pipe.fit(X, y)
+
+    def predict(self, features: dict) -> float:
+        """
+        Predict hr_per_game for a single player given a feature dict.
+        Returns a non-negative float (Ridge can predict < 0; clipped at 0.0).
+        """
+        if self._pipe is None:
+            raise RuntimeError("HRRateModel is not fitted. Call fit() or load() first.")
+        X = pd.DataFrame([features])[BATTER_FEATURES].fillna(0.0)
+        val = float(self._pipe.predict(X)[0])
+        return max(0.0, val)
+
+    def save(self, path: str | Path) -> None:
+        """Serialize the fitted pipeline to a pickle file."""
+        Path(path).parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "wb") as f:
+            pickle.dump(self._pipe, f)
+
+    def load(self, path: str | Path) -> None:
+        """Load a previously saved pipeline from disk."""
+        with open(path, "rb") as f:
+            self._pipe = pickle.load(f)
+
+
+def _get_or_train_model(batter_dfs: dict[int, pd.DataFrame]) -> HRRateModel:
+    """
+    Load the model from disk if it exists and is < 7 days old.
+    Otherwise retrain on TRAIN_SEASONS (2024+2025) and save.
+    """
+    model = HRRateModel()
+
+    if MODEL_PATH.exists():
+        age_days = (
+            datetime.now() - datetime.fromtimestamp(MODEL_PATH.stat().st_mtime)
+        ).days
+        if age_days < 7:
+            model.load(MODEL_PATH)
+            return model
+
+    # Retrain
+    print("[simulation] Training model on 2024-2025 FanGraphs data...")
+    frames = []
+    for season in TRAIN_SEASONS:
+        df = batter_dfs.get(season)
+        if df is None or df.empty:
+            continue
+        df = df.copy()
+        df["hr_per_game"] = df["HR"] / df["G"].replace(0, pd.NA)
+        frames.append(df.dropna(subset=BATTER_FEATURES + ["hr_per_game"]))
+
+    if not frames:
+        raise RuntimeError(
+            "[simulation] No training data available for seasons "
+            f"{TRAIN_SEASONS}. Cannot train model."
+        )
+
+    train_df = pd.concat(frames, ignore_index=True)
+    model.fit(train_df)
+    MODEL_PATH.parent.mkdir(parents=True, exist_ok=True)
+    model.save(MODEL_PATH)
+    print(f"[simulation] Model trained on {len(train_df)} rows and saved to {MODEL_PATH}.")
+    return model
