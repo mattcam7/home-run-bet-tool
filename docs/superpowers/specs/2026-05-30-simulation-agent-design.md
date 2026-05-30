@@ -21,7 +21,7 @@
 All sources fetched via `pybaseball`, cached daily to `data/sim_cache/` to avoid slow re-fetches.
 
 ### Batter Stats
-- Source: `pybaseball.batting_stats(season, qual=50)` for 2024, 2025, 2026
+- Source: `pybaseball.batting_stats(season, qual=50)` for 2024, 2025, 2026 (50 PA minimum qualifier). Players in `final_df` below this threshold — e.g. call-ups, injury returnees — fall back to their unweighted 2026 rate if available, otherwise marked unmatched.
 - Features: `barrel_pct`, `iso`, `fb_pct`, `hard_hit_pct`, `avg_exit_velocity`, `hr_per_pa`
 - Seasonal weighting: **10% 2024 / 30% 2025 / 60% 2026** (favors recency, smooths small 2026 samples)
 - Cache file: `data/sim_cache/batter_YYYY-MM-DD.csv`
@@ -29,7 +29,8 @@ All sources fetched via `pybaseball`, cached daily to `data/sim_cache/` to avoid
 ### Pitcher Stats
 - Source: `pybaseball.pitching_stats(season, qual=1)` for 2024, 2025, 2026
 - Features used: `HR/9`, `HR/FB%`, `xFIP`
-- Today's probable starters: MLB Stats API (already used in `run.py`)
+- Today's probable starters: MLB Stats API (already used in `run.py`), which also provides pitcher handedness for platoon calculations
+- Edge case: if starter has < 5 IP of data (rookie or insufficient sample), pitcher_factor defaults to 1.0 (league neutral)
 - Cache file: `data/sim_cache/pitcher_YYYY-MM-DD.csv`
 
 ### Park Factors
