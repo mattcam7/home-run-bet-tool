@@ -132,3 +132,133 @@ def _log_unmatched(player_name: str, context: str) -> None:
     timestamp = datetime.now(timezone.utc).isoformat()
     with UNMATCHED_LOG.open("a", encoding="utf-8") as f:
         f.write(f"{timestamp} | {context} | {player_name}\n")
+
+
+# ---------------------------------------------------------------------------
+# Data fetching with daily caching
+# ---------------------------------------------------------------------------
+
+
+def _cache_path(kind: str, season: int) -> Path:
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    return CACHE_DIR / f"{kind}_{season}_{today}.csv"
+
+
+def _fetch_batter_stats(season: int) -> pd.DataFrame:
+    """
+    Fetch FanGraphs batter stats via pybaseball with daily CSV cache.
+    qual=50 PA minimum; falls back to qual=1 if < 10 rows returned (mid-season).
+    Columns used: Name, HR, G, PA, Barrel%, ISO, FB%, Hard%, EV
+    """
+    import pybaseball  # late import — not required for tests that mock
+
+    cache = _cache_path("batter", season)
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    if cache.exists():
+        return pd.read_csv(cache)
+
+    try:
+        df = pybaseball.batting_stats(season, qual=50)
+    except Exception:
+        df = pd.DataFrame()
+
+    if df.empty or len(df) < 10:
+        try:
+            df = pybaseball.batting_stats(season, qual=1)
+        except Exception:
+            df = pd.DataFrame()
+
+    if not df.empty:
+        df.to_csv(cache, index=False)
+    return df
+
+
+def _fetch_pitcher_stats(season: int) -> pd.DataFrame:
+    """
+    Fetch FanGraphs pitcher stats via pybaseball with daily CSV cache.
+    qual=1 IP (include any pitcher with any data; filter by IP later).
+    Columns used: Name, IP, HR/9, HR/FB, xFIP
+    """
+    import pybaseball
+
+    cache = _cache_path("pitcher", season)
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    if cache.exists():
+        return pd.read_csv(cache)
+
+    try:
+        df = pybaseball.pitching_stats(season, qual=1)
+    except Exception:
+        df = pd.DataFrame()
+
+    if not df.empty:
+        df.to_csv(cache, index=False)
+    return df
+
+
+def _get_weighted_batter_stats(
+    player_name: str, batter_dfs: dict[int, pd.DataFrame]
+) -> dict | None:
+    """
+    Return weighted average batter features across seasons.
+    Weight: 2024=10%, 2025=30%, 2026=60% (renormalized for available seasons).
+    Returns None and logs if no season data found for this player.
+    """
+    seasons_found: list[tuple[int, dict]] = []
+
+    # Find each season's row for this player
+    for season, df in sorted(batter_dfs.items()):
+        if df.empty or "Name" not in df.columns:
+            continue
+        candidates = df["Name"].tolist()
+        matched = _match_player(player_name, candidates)
+        if matched is None:
+            continue
+        row = df[df["Name"] == matched].iloc[0]
+        # Ensure required features present
+        stats = {}
+        for feat in BATTER_FEATURES:
+            stats[feat] = float(row[feat]) if feat in row.index and pd.notna(row[feat]) else None
+        if any(v is None for v in stats.values()):
+            continue
+        seasons_found.append((season, stats))
+
+    if not seasons_found:
+        _log_unmatched(player_name, "batter_stats")
+        return None
+
+    # Renormalize weights for available seasons
+    total_weight = sum(SEASON_WEIGHTS[s] for s, _ in seasons_found)
+    weighted: dict[str, float] = {feat: 0.0 for feat in BATTER_FEATURES}
+    for season, stats in seasons_found:
+        w = SEASON_WEIGHTS[season] / total_weight
+        for feat in BATTER_FEATURES:
+            weighted[feat] += w * stats[feat]
+
+    return weighted
+
+
+def _get_pitcher_stats_by_name(
+    pitcher_name: str, pitcher_dfs: dict[int, pd.DataFrame]
+) -> dict | None:
+    """
+    Return pitcher stats dict with HR/9, IP.
+    Searches most-recent season first; falls back to earlier seasons.
+    Returns None if pitcher not found in any season.
+    """
+    for season in sorted(pitcher_dfs.keys(), reverse=True):
+        df = pitcher_dfs[season]
+        if df.empty or "Name" not in df.columns:
+            continue
+        candidates = df["Name"].tolist()
+        matched = _match_player(pitcher_name, candidates)
+        if matched is None:
+            continue
+        row = df[df["Name"] == matched].iloc[0]
+        return {
+            "HR/9": float(row["HR/9"]) if "HR/9" in row.index and pd.notna(row["HR/9"]) else PITCHER_LEAGUE_HR9,
+            "IP": float(row["IP"]) if "IP" in row.index and pd.notna(row["IP"]) else 0.0,
+            "HR/FB": float(row["HR/FB"]) if "HR/FB" in row.index and pd.notna(row["HR/FB"]) else None,
+            "xFIP": float(row["xFIP"]) if "xFIP" in row.index and pd.notna(row["xFIP"]) else None,
+        }
+    return None
