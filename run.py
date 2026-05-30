@@ -9,6 +9,7 @@ from agents.ev_calculator import calculate_ev
 from agents.odds_scraper import extract_retail_odds
 from agents.parlay import format_parlays, generate_parlays
 from agents.pinnacle_scraper import extract_sharp_anchor
+from agents.simulation import add_simulation
 from dashboard.generator import generate_dashboard
 
 
@@ -146,6 +147,9 @@ def main() -> None:
     print("Calculating EV...")
     final_df = calculate_ev(retail_df, anchor_df)
     final_df["team"] = final_df["player_name"].map(player_teams).fillna("")
+
+    print("Running simulation model...")
+    final_df = add_simulation(final_df)
 
     n_players = len(final_df)
     n_positive = int((final_df["ev_pct"] > 0).sum())

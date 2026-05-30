@@ -305,3 +305,18 @@ class TestAddSimulation:
         assert "sim_edge" in result.columns
         assert "convergence" in result.columns
         assert result["sim_prob"].dropna().between(0.01, 0.60).all()
+
+
+def test_add_simulation_importable_from_run():
+    """Confirm add_simulation is imported in run.py so the pipeline can call it."""
+    import importlib, ast, pathlib
+    source = pathlib.Path("run.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    imports = [
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "agents.simulation"
+    ]
+    assert imports, "run.py does not import from agents.simulation"
+    names = [alias.name for imp in imports for alias in imp.names]
+    assert "add_simulation" in names, f"add_simulation not imported; found: {names}"
