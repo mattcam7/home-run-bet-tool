@@ -17,6 +17,8 @@ META_COLS = {
     "kelly_units", "stake_usd",
     # Simulation columns — must NOT appear as book columns in the EV table
     "sim_prob", "sim_edge", "convergence",
+    # Z-score columns — display-only scaling, not book odds
+    "pin_prob_z", "sim_prob_z",
 }
 
 HTML_TEMPLATE = """<!DOCTYPE html>
@@ -88,6 +90,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       <th onclick="sortBy('team')">Team</th>
       <th onclick="sortBy('time_sort')">Time (ET)</th>
       <th onclick="sortBy('pinnacle_pct')">Pin %</th>
+      <th onclick="sortBy('pin_prob_z')">Pin Z</th>
       <th onclick="sortBy('sharp_anchor')">Anchor</th>
       __BOOK_HEADERS__
       <th onclick="sortBy('best_retail_odds')">Best Retail</th>
@@ -144,6 +147,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
           <td><input type="checkbox" ${legs[r.player+'|'+r.game]?'checked':''} onchange="toggleLeg('${r.player}','${r.game}',this)"></td>
           <td>${r.player}</td><td>${r.team}</td><td>${r.time}</td>
           <td>${r.pinnacle_pct.toFixed(1)}%</td>
+          <td>${fmtZ(r.pin_prob_z)}</td>
           <td>${fmtAnchor(r.sharp_anchor)}</td>
           ${BOOKS.map(b=>fmtBook(r[b])).join('')}
           <td>${fmtOdds(r.best_retail_odds)}</td>
@@ -157,7 +161,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       const tbody=document.getElementById('sim-table-body');
       if(!tbody)return;
       if(!SIM_DATA||!SIM_DATA.length){
-        if(tbody)tbody.innerHTML='<tr><td colspan="10" style="color:#999;font-style:italic;text-align:center">No simulation data.</td></tr>';
+        if(tbody)tbody.innerHTML='<tr><td colspan="12" style="color:#999;font-style:italic;text-align:center">No simulation data.</td></tr>';
         return;
       }
       const sorted=[...SIM_DATA].sort((a,b)=>{
@@ -173,9 +177,12 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         else if(r.sim_edge<-3)cls='sim-bearish-row';
         const edgeStr=(r.sim_edge>=0?'+':'')+r.sim_edge.toFixed(1)+'%';
         const convBadge=r.convergence==='AGREE'?'<span style="color:#155724;font-weight:600">&#10003;AGREE</span>':'<span style="color:#721c24">DIVERGE</span>';
+        const simZStr=r.sim_prob_z!=null?fmtZ(r.sim_prob_z):'--';
+        const pinZStr=r.pin_prob_z!=null?fmtZ(r.pin_prob_z):'--';
         return`<tr class="${cls}">
           <td>${r.player}</td><td>${r.team}</td><td>${r.game}</td>
-          <td>${r.sim_prob.toFixed(1)}%</td><td>${r.pin_prob.toFixed(1)}%</td>
+          <td>${r.sim_prob.toFixed(1)}%</td><td>${simZStr}</td>
+          <td>${r.pin_prob.toFixed(1)}%</td><td>${pinZStr}</td>
           <td>${edgeStr}</td><td>${convBadge}</td>
           <td>${fmtOdds(r.best_retail_odds)}</td><td>${fmtPct(r.ev_pct)}</td>
           <td>${r.stake}</td>
@@ -286,7 +293,9 @@ _SIM_TABLE_HTML = """<div id="sim-section">
       <th onclick="sortSim('team')">Team</th>
       <th onclick="sortSim('game')">Game</th>
       <th onclick="sortSim('sim_prob')">Sim %</th>
+      <th onclick="sortSim('sim_prob_z')">Sim Z</th>
       <th onclick="sortSim('pin_prob')">Pin %</th>
+      <th onclick="sortSim('pin_prob_z')">Pin Z</th>
       <th onclick="sortSim('sim_edge')">Sim Edge</th>
       <th>Signal</th>
       <th onclick="sortSim('best_retail_odds')">Best Retail</th>
@@ -313,8 +322,31 @@ def generate_dashboard(
 ) -> None:
     book_cols = [c for c in final_df.columns if c not in META_COLS]
 
+    # --- Per-slate z-scores for scaling context ---
+    # Work on a local copy so we never mutate the caller's DataFrame.
+    _df = final_df.copy()
+
+    # Pin prob z-score (all players on today's slate)
+    _pin_std = _df["pinnacle_prob"].std(ddof=0)
+    _pin_mean = _df["pinnacle_prob"].mean()
+    _df["pin_prob_z"] = (
+        (_df["pinnacle_prob"] - _pin_mean) / _pin_std
+        if _pin_std > 0 else 0.0
+    )
+
+    # Sim prob z-score (only over matched players — NaN for unmatched)
+    _df["sim_prob_z"] = float("nan")
+    if "sim_prob" in _df.columns:
+        _sim_mask = _df["sim_prob"].notna()
+        if _sim_mask.sum() >= 2:
+            _sv = _df.loc[_sim_mask, "sim_prob"]
+            _sim_std = _sv.std(ddof=0)
+            _df.loc[_sim_mask, "sim_prob_z"] = (
+                (_sv - _sv.mean()) / _sim_std if _sim_std > 0 else 0.0
+            )
+
     records = []
-    for _, row in final_df.iterrows():
+    for _, row in _df.iterrows():
         record = {
             "player": row["player_name"],
             "team": row.get("team", ""),
@@ -322,6 +354,7 @@ def generate_dashboard(
             "time": row["commence_time"].astimezone(ET).strftime("%I:%M %p ET"),
             "time_sort": row["commence_time"].timestamp(),
             "pinnacle_pct": round(row["pinnacle_prob"] * 100, 2),
+            "pin_prob_z": round(float(row["pin_prob_z"]), 2),
             "sharp_anchor": row.get("sharp_anchor", "pinnacle"),
             "best_retail_odds": int(row["best_retail_odds"]),
             "ev_pct": round(row["ev_pct"] * 100, 2),
@@ -338,17 +371,20 @@ def generate_dashboard(
         records.append(record)
 
     # Build simulation section
-    if _SIM_COLS.issubset(final_df.columns) and final_df["sim_prob"].notna().any():
+    if _SIM_COLS.issubset(_df.columns) and _df["sim_prob"].notna().any():
         sim_records = []
-        for _, row in final_df.iterrows():
+        for _, row in _df.iterrows():
             if pd.isna(row.get("sim_prob")):
                 continue
+            _spz = row.get("sim_prob_z")
             sim_records.append({
                 "player": row["player_name"],
                 "team": row.get("team", ""),
                 "game": row.get("game", ""),
                 "sim_prob": round(float(row["sim_prob"]) * 100, 1),
+                "sim_prob_z": round(float(_spz), 2) if pd.notna(_spz) else None,
                 "pin_prob": round(float(row["pinnacle_prob"]) * 100, 1),
+                "pin_prob_z": round(float(row["pin_prob_z"]), 2),
                 "sim_edge": round(float(row["sim_edge"]) * 100, 1),
                 "convergence": row["convergence"],
                 "best_retail_odds": int(row["best_retail_odds"]),
@@ -371,8 +407,8 @@ def generate_dashboard(
         sim_section_html = _SIM_UNAVAILABLE_HTML
 
     timestamp = datetime.now(ET).strftime("%Y-%m-%d %I:%M %p ET")
-    n_players = len(final_df)
-    n_positive = int((final_df["ev_pct"] > 0).sum())
+    n_players = len(_df)
+    n_positive = int((_df["ev_pct"] > 0).sum())
     book_headers = "".join(f'<th onclick="sortBy(\'{b}\')">{b}</th>' for b in book_cols)
 
     html = (
