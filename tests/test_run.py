@@ -154,3 +154,39 @@ def test_main_output_includes_bet_score(monkeypatch):
 
     assert "bet_score" in captured["df"].columns
     assert "bet_grade" in captured["df"].columns
+
+
+def test_pipeline_run_phase1_returns_context(monkeypatch):
+    """pipeline.run_phase1() returns a PipelineContext with final_df populated."""
+    import pandas as pd
+    from unittest.mock import patch
+
+    dummy_retail = pd.DataFrame([{
+        "player_name": "Test Player", "game": "A @ B",
+        "commence_time": pd.Timestamp("2026-06-10 20:00:00", tz="UTC"),
+        "bookmaker": "draftkings", "american_odds": 400, "implied_prob": 0.20,
+    }])
+    dummy_anchor = pd.DataFrame([{
+        "player_name": "Test Player", "game": "A @ B",
+        "commence_time": pd.Timestamp("2026-06-10 20:00:00", tz="UTC"),
+        "pinnacle_odds": 450, "pinnacle_prob": 0.18,
+        "sharp_anchor": "pinnacle", "over_only": False,
+    }])
+
+    with patch("pipeline.fetch_odds", return_value=[{"id": "x", "bookmakers": []}]), \
+         patch("pipeline.fetch_player_teams", return_value={}), \
+         patch("pipeline.extract_retail_odds", return_value=dummy_retail), \
+         patch("pipeline.extract_sharp_anchor", return_value=dummy_anchor), \
+         patch("pipeline.add_simulation", side_effect=lambda df: df), \
+         patch("pipeline.log_open_plays"), \
+         patch("pipeline.generate_dashboard"), \
+         patch("pipeline.generate_parlays", return_value=[]), \
+         patch("pipeline.analyze_dfs", return_value=None):
+        import os
+        os.environ["ODDS_API_KEY"] = "test"
+        import pipeline
+        ctx = pipeline.run_phase1()
+
+    assert ctx is not None
+    assert hasattr(ctx, "final_df")
+    assert "bet_score" in ctx.final_df.columns
