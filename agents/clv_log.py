@@ -36,6 +36,8 @@ OPEN_COLS = [
     "best_retail_book", "best_retail_odds", "best_retail_decimal",
     "pinnacle_over_odds", "pinnacle_prob_devig", "ev_pct",
     "kelly_units", "stake_usd",
+    "anchor_quality",  # "pinnacle" | "pinnacle_over_only" | "betonlineag" | "unknown"
+    "featured_bet",
 ]
 CLOSING_COLS = [
     "closing_ts", "closing_pinnacle_odds", "closing_pinnacle_prob",
@@ -58,6 +60,10 @@ def log_open_plays(final_df: pd.DataFrame, path: str = DEFAULT_PATH, now=None) -
     rows = []
     for _, r in final_df.iterrows():
         ct = r["commence_time"]
+        featured = (
+            float(r.get("kelly_units", 0)) >= 0.5
+            and float(r.get("ev_pct", 0)) >= 0.10
+        )
         rows.append({
             "run_ts": now.isoformat(),
             "game_date": ct.astimezone(ET).strftime("%Y-%m-%d"),
@@ -73,6 +79,8 @@ def log_open_plays(final_df: pd.DataFrame, path: str = DEFAULT_PATH, now=None) -
             "ev_pct": float(r["ev_pct"]),
             "kelly_units": float(r["kelly_units"]),
             "stake_usd": float(r["stake_usd"]),
+            "anchor_quality": str(r.get("anchor_quality", "unknown")),
+            "featured_bet": featured,
         })
     new_idx = pd.DataFrame(rows, columns=COLUMNS).set_index(KEY)
     # Defensive dedup: if final_df somehow produced two rows for the same
@@ -96,6 +104,14 @@ def log_open_plays(final_df: pd.DataFrame, path: str = DEFAULT_PATH, now=None) -
         combined = new_idx
 
     combined.reset_index().reindex(columns=COLUMNS).to_csv(path, index=False)
+
+    # Dual-write to Supabase when configured (primary store for GitHub Actions)
+    if os.environ.get("SUPABASE_KEY"):
+        try:
+            from agents.supabase_client import insert_clv_rows
+            insert_clv_rows(rows)
+        except Exception as e:
+            print(f"  [clv_log] Supabase write failed: {e} — CSV is the fallback")
 
 
 def fetch_confirmed_lineups(date_str: str):

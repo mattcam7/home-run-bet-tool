@@ -119,3 +119,48 @@ def test_capture_closing_noop_when_no_log(tmp_path):
     path = str(tmp_path / "missing.csv")
     capture_closing("k", NOW, path=path, fetch_odds_fn=lambda now: _closing_payload())
     assert not os.path.exists(path)
+
+
+def test_featured_bet_true_when_thresholds_met(tmp_path):
+    path = str(tmp_path / "clv.csv")
+    df = pd.DataFrame([{
+        "player_name": "Aaron Judge", "game": GAME, "commence_time": COMMENCE,
+        "team": "NYY", "best_retail_book": "DraftKings",
+        "best_retail_odds": 320, "best_retail_decimal": 4.2,
+        "pinnacle_odds": 300, "pinnacle_prob": 0.22,
+        "ev_pct": 0.15, "kelly_units": 0.8, "stake_usd": 20.0,
+        "anchor_quality": "pinnacle",
+    }])
+    log_open_plays(df, path=path, now=NOW)
+    result = pd.read_csv(path)
+    assert result.iloc[0]["featured_bet"] == True
+
+
+def test_featured_bet_false_when_kelly_below_threshold(tmp_path):
+    path = str(tmp_path / "clv.csv")
+    df = pd.DataFrame([{
+        "player_name": "Aaron Judge", "game": GAME, "commence_time": COMMENCE,
+        "team": "NYY", "best_retail_book": "DraftKings",
+        "best_retail_odds": 320, "best_retail_decimal": 4.2,
+        "pinnacle_odds": 300, "pinnacle_prob": 0.22,
+        "ev_pct": 0.15, "kelly_units": 0.4, "stake_usd": 10.0,
+        "anchor_quality": "pinnacle",
+    }])
+    log_open_plays(df, path=path, now=NOW)
+    result = pd.read_csv(path)
+    assert result.iloc[0]["featured_bet"] == False
+
+
+def test_featured_bet_false_when_ev_below_threshold(tmp_path):
+    path = str(tmp_path / "clv.csv")
+    df = pd.DataFrame([{
+        "player_name": "Aaron Judge", "game": GAME, "commence_time": COMMENCE,
+        "team": "NYY", "best_retail_book": "DraftKings",
+        "best_retail_odds": 320, "best_retail_decimal": 4.2,
+        "pinnacle_odds": 300, "pinnacle_prob": 0.22,
+        "ev_pct": 0.05, "kelly_units": 0.8, "stake_usd": 20.0,
+        "anchor_quality": "pinnacle",
+    }])
+    log_open_plays(df, path=path, now=NOW)
+    result = pd.read_csv(path)
+    assert result.iloc[0]["featured_bet"] == False
