@@ -123,15 +123,23 @@ def run(
         orig_ev = float(row["ev_pct"])
         curr_ev = _american_to_decimal(curr_odds) * pin_prob - 1
 
-        if curr_ev < 0:
-            post_alert_fn(pname, orig_odds, curr_odds, orig_ev, "withdrawal")
-            today_state[pname] = {**player_state, "withdrawal_sent": True}
-            alerts_sent += 1
+        if curr_ev < 0 and not player_state.get("withdrawal_sent"):
+            try:
+                post_alert_fn(pname, orig_odds, curr_odds, orig_ev, "withdrawal")
+                today_state[pname] = {**player_state, "withdrawal_sent": True}
+                alerts_sent += 1
+            except Exception as e:
+                import logging
+                logging.error(f"monitor: withdrawal alert failed for {pname}: {e}")
         elif (abs(curr_odds - orig_odds) > 15 or
               (orig_ev >= 0.10 and curr_ev < 0.05)) and not player_state.get("alert_sent"):
-            post_alert_fn(pname, orig_odds, curr_odds, orig_ev, "movement")
-            today_state[pname] = {**player_state, "alert_sent": True}
-            alerts_sent += 1
+            try:
+                post_alert_fn(pname, orig_odds, curr_odds, orig_ev, "movement")
+                today_state[pname] = {**player_state, "alert_sent": True}
+                alerts_sent += 1
+            except Exception as e:
+                import logging
+                logging.error(f"monitor: movement alert failed for {pname}: {e}")
 
     state[today_str] = today_state
     _save_state(state)
