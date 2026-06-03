@@ -164,3 +164,33 @@ def test_featured_bet_false_when_ev_below_threshold(tmp_path):
     log_open_plays(df, path=path, now=NOW)
     result = pd.read_csv(path)
     assert result.iloc[0]["featured_bet"] == False
+
+
+def test_featured_bet_true_at_kelly_boundary(tmp_path):
+    path = str(tmp_path / "clv.csv")
+    df = pd.DataFrame([{
+        "player_name": "Aaron Judge", "game": GAME, "commence_time": COMMENCE,
+        "team": "NYY", "best_retail_book": "DraftKings",
+        "best_retail_odds": 320, "best_retail_decimal": 4.2,
+        "pinnacle_odds": 300, "pinnacle_prob": 0.22,
+        "ev_pct": 0.15, "kelly_units": 0.5, "stake_usd": 12.5,
+        "anchor_quality": "pinnacle",
+    }])
+    log_open_plays(df, path=path, now=NOW)
+    result = pd.read_csv(path)
+    assert result.iloc[0]["featured_bet"] == True
+
+
+def test_featured_bet_true_at_ev_boundary(tmp_path):
+    path = str(tmp_path / "clv.csv")
+    df = pd.DataFrame([{
+        "player_name": "Aaron Judge", "game": GAME, "commence_time": COMMENCE,
+        "team": "NYY", "best_retail_book": "DraftKings",
+        "best_retail_odds": 320, "best_retail_decimal": 4.2,
+        "pinnacle_odds": 300, "pinnacle_prob": 0.22,
+        "ev_pct": 0.10, "kelly_units": 0.8, "stake_usd": 20.0,
+        "anchor_quality": "pinnacle",
+    }])
+    log_open_plays(df, path=path, now=NOW)
+    result = pd.read_csv(path)
+    assert result.iloc[0]["featured_bet"] == True
