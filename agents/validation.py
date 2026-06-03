@@ -30,8 +30,8 @@ def append_quarantine(rows: list[dict], path: str = QUARANTINE_PATH) -> None:
     ts = datetime.now(timezone.utc).isoformat()
     with open(path, "a", encoding="utf-8") as f:
         for row in rows:
-            row.setdefault("ts", ts)
-            f.write(json.dumps(row) + "\n")
+            entry = {**row, "ts": row.get("ts", ts)}
+            f.write(json.dumps(entry) + "\n")
 
 
 def validate_raw_odds(events: list[dict]) -> StepResult:
@@ -82,7 +82,7 @@ def validate_ev_output(df: pd.DataFrame) -> StepResult:
     quarantined: list[dict] = []
     warnings: list[str] = []
 
-    ev = pd.to_numeric(df.get("ev_pct", pd.Series(dtype=float)), errors="coerce")
+    ev = pd.to_numeric(df.get("ev_pct", pd.Series(0.0, index=df.index)), errors="coerce")
 
     # Drop rows with impossible EV (|ev| > 200%)
     impossible_mask = ev.abs() > 2.0
@@ -126,7 +126,7 @@ def validate_ev_output(df: pd.DataFrame) -> StepResult:
                 f"{pct_high:.0%} of plays above +600 (threshold: 30%) — check for anchor mismatch"
             )
 
-    return StepResult(clean=clean, quarantined=quarantined, warnings=warnings)
+    return StepResult(clean=clean, quarantined=quarantined, warnings=warnings, ok=len(clean) > 0)
 
 
 def validate_clv_log(df: pd.DataFrame) -> StepResult:
@@ -134,9 +134,15 @@ def validate_clv_log(df: pd.DataFrame) -> StepResult:
     if df.empty:
         return StepResult(clean=df, warnings=["CLV log is empty"])
 
+    if "closing_pinnacle_prob" not in df.columns:
+        return StepResult(clean=df, warnings=["closing_pinnacle_prob column missing"])
+
     captured = df[df["closing_pinnacle_prob"].notna()].copy()
     if captured.empty:
         return StepResult(clean=df, warnings=["No closing lines captured yet"])
+
+    if "clv_pct" not in captured.columns:
+        return StepResult(clean=df, warnings=["clv_pct column missing"])
 
     clv = pd.to_numeric(captured["clv_pct"], errors="coerce")
     anomalies = captured[clv.abs() > 0.50]

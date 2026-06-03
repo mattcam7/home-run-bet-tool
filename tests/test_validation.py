@@ -138,6 +138,29 @@ def test_append_quarantine_writes_jsonl():
     finally:
         os.unlink(path)
 
+def test_validate_ev_output_handles_missing_ev_pct_column():
+    df = pd.DataFrame([{"player_name": "X", "kelly_units": 0.5, "stake_usd": 12.5,
+                         "best_retail_odds": 400, "anchor_quality": "pinnacle"}])
+    result = validate_ev_output(df)  # must not crash
+    assert result.ok is True
+
+def test_validate_clv_log_handles_missing_closing_pinnacle_prob_column():
+    df = pd.DataFrame([{"player_name": "X", "clv_pct": 0.05, "game_date": "2026-06-01"}])
+    result = validate_clv_log(df)  # must not crash
+    assert "closing_pinnacle_prob" in result.warnings[0]
+
+def test_validate_clv_log_handles_missing_clv_pct_column():
+    df = pd.DataFrame([{"player_name": "X", "closing_pinnacle_prob": 0.18, "game_date": "2026-06-01"}])
+    result = validate_clv_log(df)  # must not crash
+    assert "clv_pct" in result.warnings[0]
+
+def test_validate_ev_output_empty_after_quarantine_sets_ok_false():
+    df = pd.DataFrame([{"player_name": "X", "ev_pct": 3.0, "kelly_units": 0,
+                         "stake_usd": 0, "best_retail_odds": 400, "anchor_quality": "pinnacle"}])
+    result = validate_ev_output(df)
+    assert result.ok is False  # all rows quarantined → ok=False
+
+
 def test_append_quarantine_appends_not_overwrites():
     with tempfile.NamedTemporaryFile(suffix=".jsonl", delete=False, mode="w") as f:
         path = f.name
