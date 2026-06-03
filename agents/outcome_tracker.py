@@ -250,9 +250,25 @@ def backfill(
     skip_today: bool = True,
 ) -> list[dict]:
     """Update outcomes for every date present in the CLV log."""
+    import os
     import pandas as pd
 
-    clv = pd.read_csv(clv_log_path)
+    supabase_key = os.environ.get("SUPABASE_KEY", "")
+    if supabase_key:
+        try:
+            from agents.supabase_client import fetch_clv_log
+            clv = fetch_clv_log()
+        except Exception:
+            clv = pd.read_csv(clv_log_path) if Path(clv_log_path).exists() else pd.DataFrame()
+    elif Path(clv_log_path).exists():
+        clv = pd.read_csv(clv_log_path)
+    else:
+        clv = pd.DataFrame()
+
+    if clv.empty:
+        print("No CLV log data found — nothing to backfill.")
+        return []
+
     dates = sorted(clv["game_date"].dropna().unique())
     today_str = date.today().isoformat()
 
@@ -315,6 +331,9 @@ def compute_roi_metrics(
 
     if featured_only and "featured_bet" in clv.columns:
         clv = clv[clv["featured_bet"].astype(str).str.lower() == "true"].copy()
+
+    if clv.empty:
+        return {"has_outcomes": False, "n_with_outcome": 0, "n_total": 0}
 
     if outcomes.empty:
         return {"has_outcomes": False, "n_with_outcome": 0}
