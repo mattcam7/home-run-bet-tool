@@ -132,3 +132,41 @@ def test_sim_data_injected_into_js(tmp_path, sample_df_with_sim):
     content = open(output, encoding="utf-8").read()
     assert "Aaron Judge" in content
     assert "SIM_DATA" in content
+
+
+def test_dashboard_includes_bet_score_column():
+    """Dashboard HTML must surface bet_score and bet_grade."""
+    import pandas as pd
+    from dashboard.generator import generate_dashboard
+    import tempfile, os
+
+    df = pd.DataFrame([{
+        "player_name": "Matt Olson",
+        "team": "ATL",
+        "game": "SF Giants @ Atlanta Braves",
+        "commence_time": pd.Timestamp("2026-06-10 19:20:00", tz="UTC"),
+        "pinnacle_odds": 420,
+        "pinnacle_prob": 0.19,
+        "sharp_anchor": "pinnacle",
+        "best_retail_odds": 450,
+        "best_retail_decimal": 5.5,
+        "best_retail_book": "draftkings",
+        "ev_pct": 0.045,
+        "composite_score": 0.008,
+        "composite_z": 0.8,
+        "kelly_units": 0.5,
+        "stake_usd": 12.5,
+        "anchor_quality": "pinnacle",
+        "over_only": False,
+        "sim_prob": 0.17,
+        "sim_edge": -0.01,
+        "convergence": False,
+        "pin_prob_z": 0.5,
+        "sim_prob_z": 0.3,
+        "bet_score": 78,
+        "bet_grade": "Solid",
+    }])
+
+    html = generate_dashboard(df, open_browser=False)
+    assert "bet_score" in html.lower() or "score" in html.lower()
+    assert "78" in html  # bet_score value
