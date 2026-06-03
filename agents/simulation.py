@@ -24,6 +24,8 @@ from sklearn.linear_model import Ridge
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 
+from agents.ml_retrain import apply_correction
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -612,6 +614,8 @@ def add_simulation(df: pd.DataFrame) -> pd.DataFrame:
             platoon_factor = _get_platoon_factor(batter_hand, pitcher_hand)
 
             sim_prob = base_prob * park_factor * pitcher_factor * platoon_factor
+            sim_prob = max(0.01, min(0.60, sim_prob))
+            sim_prob = apply_correction(row["player_name"], sim_prob)
             sim_prob = max(0.01, min(0.60, sim_prob))
             sim_probs.append(sim_prob)
 

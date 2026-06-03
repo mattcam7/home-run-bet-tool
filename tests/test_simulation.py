@@ -311,6 +311,72 @@ class TestAddSimulation:
         assert 0.05 < judge_prob < 0.55, f"sim_prob {judge_prob:.3f} is implausibly outside 0.05-0.55"
 
 
+    def test_correction_factor_is_applied_when_available(self, tmp_path, monkeypatch):
+        """sim_prob should be nudged by correction factor when models/correction_factors.json exists."""
+        import json
+        from pathlib import Path
+        import agents.simulation as sim_mod
+        from agents import ml_retrain
+
+        # Monkeypatch fetch functions so sim_prob is always computed (no live network)
+        import numpy as np
+        rng = np.random.default_rng(7)
+        n = 10
+        mock_batter_df = pd.DataFrame({
+            "Name": ["Matt Olson"] + [f"Player{i}" for i in range(n - 1)],
+            "brl_percent": [18.0] + list(rng.uniform(4, 18, n - 1)),
+            "avg_hit_speed": [94.0] + list(rng.uniform(85, 95, n - 1)),
+            "ev95percent": [55.0] + list(rng.uniform(30, 55, n - 1)),
+            "iso": [0.30] + list(rng.uniform(0.10, 0.35, n - 1)),
+            "HR": [40] + list(rng.integers(5, 40, n - 1)),
+            "G": [155] + list(rng.integers(80, 162, n - 1)),
+        })
+        mock_pitcher_df = pd.DataFrame([{"Name": "Dummy Pitcher", "HR/9": 1.3, "IP": 100.0}])
+
+        monkeypatch.setattr(sim_mod, "CACHE_DIR", tmp_path / "sim_cache")
+        monkeypatch.setattr(sim_mod, "MODEL_PATH", tmp_path / "sim_model.pkl")
+        monkeypatch.setattr(sim_mod, "UNMATCHED_LOG", tmp_path / "sim_unmatched.log")
+        monkeypatch.setattr(sim_mod, "_fetch_batter_stats", lambda season: mock_batter_df)
+        monkeypatch.setattr(sim_mod, "_fetch_pitcher_stats", lambda season: mock_pitcher_df)
+        monkeypatch.setattr(sim_mod, "_fetch_probable_starters", lambda today: {})
+        monkeypatch.setattr(sim_mod, "_fetch_batter_hands", lambda: {})
+
+        df = pd.DataFrame([{
+            "player_name": "Matt Olson",
+            "game": "SF Giants @ Atlanta Braves",
+            "commence_time": pd.Timestamp("2026-06-10 19:20:00", tz="UTC"),
+            "pinnacle_prob": 0.15,
+            "ev_pct": 0.05,
+        }])
+
+        # Run without correction factors to get the baseline
+        no_cf_path = tmp_path / "nonexistent.json"
+        monkeypatch.setattr(ml_retrain, "CORRECTION_PATH", no_cf_path)
+        baseline = add_simulation(df)
+        if "sim_prob" not in baseline.columns or pd.isna(baseline.iloc[0]["sim_prob"]):
+            pytest.skip("sim_prob not available (stats not fetched in test env)")
+        baseline_prob = float(baseline.iloc[0]["sim_prob"])
+
+        # Write a correction factor with factor=2.0, n=100 (alpha=min(100/200,0.40)=0.40)
+        # Expected: base_prob * (0.40*2.0 + 0.60) = base_prob * 1.40
+        cf = {"Matt Olson": {"factor": 2.0, "n": 100, "actual_rate": 0.30, "predicted_rate": 0.15}}
+        cf_path = tmp_path / "cf.json"
+        cf_path.write_text(json.dumps(cf))
+        monkeypatch.setattr(ml_retrain, "CORRECTION_PATH", cf_path)
+
+        # Re-run with correction factor active; use fresh model path to force retrain
+        monkeypatch.setattr(sim_mod, "MODEL_PATH", tmp_path / "sim_model2.pkl")
+        result = add_simulation(df)
+        corrected_prob = float(result.iloc[0]["sim_prob"])
+
+        # With factor=2.0 and alpha=0.40, corrected = base * 1.40, capped at 0.60
+        expected = min(0.60, max(0.01, baseline_prob * 1.40))
+        assert abs(corrected_prob - expected) < 1e-6, (
+            f"Correction not applied: baseline={baseline_prob:.4f}, "
+            f"corrected={corrected_prob:.4f}, expected≈{expected:.4f}"
+        )
+
+
 def test_add_simulation_importable_from_run():
     """Confirm add_simulation is imported in run.py so the pipeline can call it."""
     import importlib, ast, pathlib
