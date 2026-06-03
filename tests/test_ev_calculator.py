@@ -82,3 +82,31 @@ def test_kelly_units_capped_at_3_and_floored_at_0():
     df = calculate_ev(RETAIL_DF, PINNACLE_DF)
     assert (df["kelly_units"] >= 0).all()
     assert (df["kelly_units"] <= 3.0).all()
+
+def test_over_only_anchor_always_zeroes_kelly():
+    """over_only plays must never generate a Kelly stake, regardless of retail odds."""
+    import pandas as pd
+    from agents.ev_calculator import calculate_ev
+
+    retail = pd.DataFrame([{
+        "player_name": "Test Player",
+        "game": "Team A @ Team B",
+        "commence_time": pd.Timestamp("2026-06-10 18:00:00", tz="UTC"),
+        "bookmaker": "draftkings",
+        "american_odds": 500,
+        "implied_prob": 0.167,
+    }])
+    anchor = pd.DataFrame([{
+        "player_name": "Test Player",
+        "game": "Team A @ Team B",
+        "commence_time": pd.Timestamp("2026-06-10 18:00:00", tz="UTC"),
+        "pinnacle_odds": 450,
+        "pinnacle_prob": 0.18,
+        "over_only": True,
+        "sharp_anchor": "pinnacle",
+    }])
+    result = calculate_ev(retail, anchor)
+    row = result[result["player_name"] == "Test Player"].iloc[0]
+    assert row["kelly_units"] == 0.0, f"Expected 0, got {row['kelly_units']}"
+    assert row["stake_usd"] == 0.0, f"Expected 0, got {row['stake_usd']}"
+    assert row["anchor_quality"] == "pinnacle_over_only"

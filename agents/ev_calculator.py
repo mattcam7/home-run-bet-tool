@@ -1,6 +1,47 @@
 import pandas as pd
 from agents.utils import american_to_decimal
 
+# Pinnacle Over-only lines (no Under to devig) are vig-inclusive. When a retail
+# book prices the same player above this threshold, the EV calculation is
+# unreliable — the anchor prob is overstated, producing false +EV. These plays
+# are excluded from the output. Root cause: May 2026 Saturday slates where
+# Pinnacle posted Over-only lines at +600-900 while retail had +1000-3400 via
+# alternate-market inclusion, generating 250%+ fabricated "edge".
+_OVER_ONLY_MAX_RETAIL_ODDS = 600
+
+
+def validate_slate(df: pd.DataFrame, label: str = "") -> None:
+    """Log structured warnings when a slate looks anomalously large or skewed.
+
+    Call this after calculate_ev() with the output DataFrame. Anomalies signal
+    possible data quality issues (alternate market contamination, anchor mismatch)
+    that should be inspected before trusting EV/Kelly output.
+    """
+    tag = f"[slate-validation{' ' + label if label else ''}]"
+    n = len(df)
+    odds = pd.to_numeric(df.get("best_retail_odds", pd.Series(dtype=float)), errors="coerce")
+    pct_high = float((odds > 600).mean()) if len(odds) else 0.0
+    over_only_n = int(df.get("over_only", pd.Series(False)).fillna(False).sum())
+
+    warnings = []
+    if n > 150:
+        warnings.append(
+            f"large slate: {n} plays (normal 30-100) — check for alternate market contamination"
+        )
+    if pct_high > 0.30:
+        warnings.append(
+            f"{pct_high:.0%} of plays above +600 (normal <15%) — possible anchor mismatch"
+        )
+    if over_only_n > 10:
+        warnings.append(
+            f"{over_only_n} plays with over-only Pinnacle anchor (no Under to devig)"
+        )
+
+    for w in warnings:
+        print(f"  {tag} WARNING: {w}")
+    if not warnings:
+        print(f"  {tag} OK — {n} plays, {pct_high:.0%} above +600, {over_only_n} over-only anchors")
+
 
 def calculate_ev(retail_df: pd.DataFrame, pinnacle_df: pd.DataFrame) -> pd.DataFrame:
     """
@@ -12,11 +53,13 @@ def calculate_ev(retail_df: pd.DataFrame, pinnacle_df: pd.DataFrame) -> pd.DataF
                    player_name, game, commence_time, bookmaker, american_odds, implied_prob
         pinnacle_df: DataFrame with columns:
                      player_name, game, commence_time, pinnacle_odds, pinnacle_prob
+                     Optionally: over_only (bool), sharp_anchor (str)
 
     Returns:
         DataFrame with one row per player, sorted descending by composite_z.
         Columns include: player_name, game, commence_time, pinnacle_odds, pinnacle_prob,
-                         best_retail_odds, best_retail_decimal, ev_pct, composite_score, composite_z
+                         best_retail_odds, best_retail_decimal, ev_pct, composite_score,
+                         composite_z, anchor_quality
     """
     # The model is anchored on Pinnacle's no-vig line; with no retail or no
     # Pinnacle data there is nothing to compare, so fail loudly and clearly
@@ -41,18 +84,22 @@ def calculate_ev(retail_df: pd.DataFrame, pinnacle_df: pd.DataFrame) -> pd.DataF
     pivot.columns.name = None
 
     # Inner join with sharp anchor — Pinnacle players + BetOnline fallback rows.
-    # sharp_anchor column ("pinnacle" or "betonlineag") is carried through if
-    # present so the dashboard and parlay generator can flag the confidence tier.
+    # Carry over_only and sharp_anchor if present for downstream quality guards.
     anchor_cols = ["player_name", "game", "pinnacle_odds", "pinnacle_prob"]
     if "sharp_anchor" in pinnacle_df.columns:
         anchor_cols.append("sharp_anchor")
+    if "over_only" in pinnacle_df.columns:
+        anchor_cols.append("over_only")
     merged = pivot.merge(
         pinnacle_df[anchor_cols],
         on=["player_name", "game"],
         how="inner",
     )
 
-    meta_cols = {"player_name", "game", "commence_time", "pinnacle_odds", "pinnacle_prob", "sharp_anchor"}
+    meta_cols = {
+        "player_name", "game", "commence_time",
+        "pinnacle_odds", "pinnacle_prob", "sharp_anchor", "over_only",
+    }
     book_cols = [c for c in merged.columns if c not in meta_cols]
 
     def _best_retail(row):
@@ -74,6 +121,36 @@ def calculate_ev(retail_df: pd.DataFrame, pinnacle_df: pd.DataFrame) -> pd.DataF
     merged[["best_retail_odds", "best_retail_decimal", "best_retail_book"]] = merged.apply(
         _best_retail, axis=1
     )
+
+    # --- Data quality guard: exclude over-only anchor + high retail odds ----
+    # Pinnacle Over-only lines carry vig-inclusive probability (no Under to
+    # strip against). When retail prices the same player above the threshold,
+    # the EV formula produces false edge (e.g. 250% "EV" on bench players).
+    # These plays are removed entirely rather than shown with degraded Kelly.
+    if "over_only" in merged.columns:
+        bad = merged["over_only"].fillna(False) & (
+            merged["best_retail_odds"] > _OVER_ONLY_MAX_RETAIL_ODDS
+        )
+        n_bad = int(bad.sum())
+        if n_bad:
+            print(
+                f"  [EV] Excluded {n_bad} plays: Pinnacle over-only anchor "
+                f"+ retail odds > +{_OVER_ONLY_MAX_RETAIL_ODDS} (false edge guard)"
+            )
+            merged = merged[~bad].copy()
+
+    # Derive anchor_quality label for CLV log and dashboard display.
+    def _anchor_quality(row) -> str:
+        if row.get("over_only", False):
+            return "pinnacle_over_only"
+        anchor = row.get("sharp_anchor", "")
+        if anchor == "pinnacle":
+            return "pinnacle"
+        if anchor:
+            return str(anchor)
+        return "unknown"
+
+    merged["anchor_quality"] = merged.apply(_anchor_quality, axis=1)
 
     # EV formula: (pinnacle_prob × best_retail_decimal) - 1
     merged["ev_pct"] = (merged["pinnacle_prob"] * merged["best_retail_decimal"]) - 1
@@ -97,5 +174,15 @@ def calculate_ev(retail_df: pd.DataFrame, pinnacle_df: pd.DataFrame) -> pd.DataF
     quarter_units = (f_star / 4).clip(lower=0) * 100
     merged["kelly_units"] = ((quarter_units * 2).round() / 2).clip(upper=3.0)
     merged["stake_usd"] = merged["kelly_units"] * 25
+
+    # Hard stop: over-only anchor cannot de-vig (no Under exists), so EV is
+    # unreliable regardless of retail odds. Zero any Kelly that survived above.
+    if "over_only" in merged.columns:
+        over_only_mask = merged["over_only"].fillna(False)
+        n_zeroed = int(over_only_mask.sum())
+        if n_zeroed:
+            merged.loc[over_only_mask, "kelly_units"] = 0.0
+            merged.loc[over_only_mask, "stake_usd"] = 0.0
+            print(f"  [EV] Kelly/stake zeroed for {n_zeroed} over-only anchor plays")
 
     return merged.sort_values("composite_z", ascending=False).reset_index(drop=True)
