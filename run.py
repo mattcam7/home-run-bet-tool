@@ -5,11 +5,14 @@ import requests
 from dotenv import load_dotenv
 
 from agents.clv_log import log_open_plays
-from agents.ev_calculator import calculate_ev
+from agents.dfs import analyze_dfs
+from agents.ev_calculator import calculate_ev, validate_slate
 from agents.odds_scraper import extract_retail_odds
 from agents.parlay import format_parlays, generate_parlays
 from agents.pinnacle_scraper import extract_sharp_anchor
+from agents.scoring import compute_bet_score
 from agents.simulation import add_simulation
+from agents.validation import StepResult, append_quarantine, validate_ev_output
 from dashboard.generator import generate_dashboard
 
 
@@ -146,7 +149,19 @@ def main() -> None:
 
     print("Calculating EV...")
     final_df = calculate_ev(retail_df, anchor_df)
+    validate_slate(final_df)
     final_df["team"] = final_df["player_name"].map(player_teams).fillna("")
+
+    # Validate EV output and quarantine bad rows
+    ev_result = validate_ev_output(final_df)
+    if ev_result.quarantined:
+        append_quarantine(ev_result.quarantined)
+    for w in ev_result.warnings:
+        print(f"  [validation] {w}")
+    final_df = ev_result.clean
+
+    # Compute bet quality score (0-100)
+    final_df = compute_bet_score(final_df)
 
     print("Running simulation model...")
     final_df = add_simulation(final_df)
@@ -162,7 +177,18 @@ def main() -> None:
     if parlays:
         print(f"\n{format_parlays(parlays)}")
 
-    generate_dashboard(final_df, parlays=parlays)
+    dfs_data = analyze_dfs("data/dfs_projections.csv", final_df)
+    if dfs_data:
+        meta = dfs_data["meta"]
+        print(
+            f"DFS projections loaded: {meta['active_hitters']} active hitters, "
+            f"{meta['hr_matches']} HR prop matches, "
+            f"{len(dfs_data['convergences'])} convergence plays."
+        )
+    else:
+        print("No DFS projections found at data/dfs_projections.csv — DFS tab will be empty.")
+
+    generate_dashboard(final_df, parlays=parlays, dfs_data=dfs_data)
     print("Dashboard opened in browser.")
 
 

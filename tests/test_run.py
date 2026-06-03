@@ -117,3 +117,40 @@ def test_main_exits_cleanly_when_anchor_missing(monkeypatch):
 
     main()  # must return cleanly, not raise
     assert called == []  # no EV, no log, no dashboard when anchor absent
+
+
+def test_main_output_includes_bet_score(monkeypatch):
+    """run.py pipeline must produce bet_score and bet_grade columns."""
+    import pandas as pd
+    from unittest.mock import patch
+
+    captured = {}
+
+    def fake_generate_dashboard(df, **kwargs):
+        captured["df"] = df
+
+    with patch("run.fetch_odds", return_value=[]), \
+         patch("run.fetch_player_teams", return_value={}), \
+         patch("run.extract_retail_odds", return_value=pd.DataFrame([{
+             "player_name": "Test Player", "game": "A @ B",
+             "commence_time": pd.Timestamp("2026-06-10 20:00:00", tz="UTC"),
+             "bookmaker": "draftkings", "american_odds": 400, "implied_prob": 0.20,
+         }])), \
+         patch("run.extract_sharp_anchor", return_value=pd.DataFrame([{
+             "player_name": "Test Player", "game": "A @ B",
+             "commence_time": pd.Timestamp("2026-06-10 20:00:00", tz="UTC"),
+             "pinnacle_odds": 450, "pinnacle_prob": 0.18,
+             "sharp_anchor": "pinnacle", "over_only": False,
+         }])), \
+         patch("run.add_simulation", side_effect=lambda df: df), \
+         patch("run.log_open_plays"), \
+         patch("run.generate_dashboard", side_effect=fake_generate_dashboard), \
+         patch("run.generate_parlays", return_value=[]), \
+         patch("run.analyze_dfs", return_value=None):
+        import os
+        os.environ["ODDS_API_KEY"] = "test"
+        import run
+        run.main()
+
+    assert "bet_score" in captured["df"].columns
+    assert "bet_grade" in captured["df"].columns

@@ -53,8 +53,14 @@ _META: frozenset[str] = frozenset({
     "best_retail_odds", "best_retail_decimal", "best_retail_book",
     "ev_pct", "composite_score", "composite_z",
     "kelly_units", "stake_usd",
+    # Quality / anchor metadata — string columns, not book odds
+    "anchor_quality", "over_only",
     # Simulation columns — must NOT be treated as book odds columns
     "sim_prob", "sim_edge", "convergence",
+    # Z-score display columns
+    "pin_prob_z", "sim_prob_z",
+    # Bet quality scoring columns — not book odds
+    "bet_score", "bet_grade",
 })
 
 
@@ -123,7 +129,7 @@ def generate_parlays(
         anchor = str(row.get("sharp_anchor", "pinnacle"))
         for book in book_cols:
             val = row.get(book)
-            if pd.isna(val) or val is None:
+            if pd.isna(val) or val is None or int(val) == 0:
                 continue
             dec = _a2d(int(val))
             if dec < min_leg_decimal or dec > max_leg_decimal:
