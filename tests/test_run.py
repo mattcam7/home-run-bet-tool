@@ -156,6 +156,47 @@ def test_main_output_includes_bet_score(monkeypatch):
     assert "bet_grade" in captured["df"].columns
 
 
+def test_no_browser_calls_post_picks(monkeypatch):
+    """--no-browser flag routes through discord post_picks instead of opening browser."""
+    import sys
+    import pandas as pd
+    from unittest.mock import patch, MagicMock
+
+    dummy_retail = pd.DataFrame([{
+        "player_name": "Test Player", "game": "A @ B",
+        "commence_time": pd.Timestamp("2026-06-10 20:00:00", tz="UTC"),
+        "bookmaker": "draftkings", "american_odds": 400, "implied_prob": 0.20,
+    }])
+    dummy_anchor = pd.DataFrame([{
+        "player_name": "Test Player", "game": "A @ B",
+        "commence_time": pd.Timestamp("2026-06-10 20:00:00", tz="UTC"),
+        "pinnacle_odds": 450, "pinnacle_prob": 0.18,
+        "sharp_anchor": "pinnacle", "over_only": False,
+    }])
+
+    post_picks_calls = []
+    fake_discord = MagicMock()
+    fake_discord.post_picks = lambda df, now=None: post_picks_calls.append(df)
+    monkeypatch.setitem(sys.modules, "agents.discord_bot", fake_discord)
+
+    with patch("sys.argv", ["run.py", "--no-browser"]), \
+         patch("run.fetch_odds", return_value=[]), \
+         patch("run.fetch_player_teams", return_value={}), \
+         patch("run.extract_retail_odds", return_value=dummy_retail), \
+         patch("run.extract_sharp_anchor", return_value=dummy_anchor), \
+         patch("run.add_simulation", side_effect=lambda df: df), \
+         patch("run.log_open_plays"), \
+         patch("run.generate_dashboard"), \
+         patch("run.generate_parlays", return_value=[]), \
+         patch("run.analyze_dfs", return_value=None):
+        import os
+        os.environ["ODDS_API_KEY"] = "test"
+        import run
+        run.main()
+
+    assert len(post_picks_calls) == 1, "post_picks should be called exactly once with --no-browser"
+
+
 def test_no_browser_argparse_parses_correctly():
     import argparse
     parser = argparse.ArgumentParser()
