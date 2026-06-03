@@ -41,10 +41,12 @@ def test_fires_movement_alert_on_large_line_move(tmp_path, monkeypatch):
     monkeypatch.setattr(monitor, "CLV_PATH", clv_csv)
     monkeypatch.setattr(monitor, "STATE_PATH", state_path)
 
+    # odds=370 → decimal 4.7 → ev=4.7*0.22-1=0.034 (positive, no withdrawal)
+    # movement triggered: |370-320|=50 > 15
     monitor.run(
         now=NOW,
         fetch_odds_fn=lambda key, now: [],
-        current_odds_fn=lambda raw, now: _current_odds_df(odds=240),  # moved 80 pts
+        current_odds_fn=lambda raw, now: _current_odds_df(odds=370),  # moved 50 pts, EV still positive
         post_alert_fn=lambda *a, **kw: alerts.append(a),
         post_status_fn=lambda msg: None,
     )
@@ -91,10 +93,12 @@ def test_skips_already_alerted_player(tmp_path, monkeypatch):
     monkeypatch.setattr(monitor, "CLV_PATH", clv_csv)
     monkeypatch.setattr(monitor, "STATE_PATH", state_path)
 
+    # odds=360 → decimal 4.6 → ev=4.6*0.22-1=0.012 (positive, no withdrawal)
+    # movement triggered (|360-320|=40 > 15) but alert_sent=True blocks it
     monitor.run(
         now=NOW,
         fetch_odds_fn=lambda key, now: [],
-        current_odds_fn=lambda raw, now: _current_odds_df(odds=240),
+        current_odds_fn=lambda raw, now: _current_odds_df(odds=360),
         post_alert_fn=lambda *a, **kw: alerts.append(a),
         post_status_fn=lambda msg: None,
     )

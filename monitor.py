@@ -106,8 +106,8 @@ def run(
         pname = str(row["player_name"])
         player_state = today_state.get(pname, {})
 
-        # Skip if any alert already sent for this player today
-        if player_state.get("alert_sent") or player_state.get("withdrawal_sent"):
+        # Skip only if withdrawal already sent — nothing more to do for this player
+        if player_state.get("withdrawal_sent"):
             continue
 
         if pname not in current_idx.index:
@@ -121,23 +121,14 @@ def run(
         orig_odds = int(row["best_retail_odds"])
         pin_prob = float(row["pinnacle_prob_devig"])
         orig_ev = float(row["ev_pct"])
-        orig_decimal = _american_to_decimal(orig_odds)
-        curr_decimal = _american_to_decimal(curr_odds)
-        # Estimate current EV as the stored EV adjusted by how much the decimal moved,
-        # weighted by the Pinnacle implied probability. This avoids re-fetching
-        # Pinnacle and keeps the estimate anchored to the original fair price.
-        curr_ev = orig_ev + (curr_decimal - orig_decimal) * pin_prob
-
-        movement_triggered = (
-            abs(curr_odds - orig_odds) > 15 or
-            (orig_ev >= 0.10 and curr_ev < 0.05)
-        )
+        curr_ev = _american_to_decimal(curr_odds) * pin_prob - 1
 
         if curr_ev < 0:
             post_alert_fn(pname, orig_odds, curr_odds, orig_ev, "withdrawal")
             today_state[pname] = {**player_state, "withdrawal_sent": True}
             alerts_sent += 1
-        elif movement_triggered:
+        elif (abs(curr_odds - orig_odds) > 15 or
+              (orig_ev >= 0.10 and curr_ev < 0.05)) and not player_state.get("alert_sent"):
             post_alert_fn(pname, orig_odds, curr_odds, orig_ev, "movement")
             today_state[pname] = {**player_state, "alert_sent": True}
             alerts_sent += 1
