@@ -12,7 +12,10 @@ def main() -> None:
     from agents.discord_bot import post_results, post_weekly_recap
 
     print(f"Updating outcomes for {yesterday}...")
-    update_for_date(yesterday)
+    try:
+        update_for_date(yesterday)
+    except Exception as e:
+        print(f"  [post_results] update_for_date failed: {e} — continuing to post results")
 
     print("Posting results to Discord...")
     post_results(yesterday)
