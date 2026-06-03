@@ -93,10 +93,13 @@ def test_post_status_never_raises(monkeypatch):
 def test_all_posting_functions_catch_exceptions(monkeypatch):
     monkeypatch.setenv("DISCORD_PICKS_WEBHOOK", "http://fake/picks")
     monkeypatch.setenv("DISCORD_RESULTS_WEBHOOK", "http://fake/results")
+    monkeypatch.setenv("DISCORD_RECAP_WEBHOOK", "http://fake/recap")
     monkeypatch.setenv("DISCORD_STATUS_WEBHOOK", "http://fake/status")
     monkeypatch.setattr("requests.post", lambda *a, **kw: (_ for _ in ()).throw(Exception("fail")))
     monkeypatch.setattr("agents.outcome_tracker.compute_roi_metrics", lambda **kw: {})
 
     from agents import discord_bot
-    discord_bot.post_picks(_featured_df(), now=NOW)  # must not raise
-    discord_bot.post_results("2026-06-02")           # must not raise
+    discord_bot.post_picks(_featured_df(), now=NOW)      # must not raise
+    discord_bot.post_results("2026-06-02")               # must not raise
+    discord_bot.post_alert("Judge", 320, 240, 0.18, 0.06, "movement")  # must not raise
+    discord_bot.post_weekly_recap(now=NOW)               # must not raise

@@ -114,7 +114,9 @@ def post_picks(final_df: pd.DataFrame, now: datetime = None) -> None:
             featured = final_df[final_df["featured_bet"] == True].copy()
             if "commence_time" in featured.columns:
                 featured = featured[featured["commence_time"].apply(
-                    lambda ct: pd.isna(ct) or (ct - now).total_seconds() / 60 > 90
+                    lambda ct: pd.isna(ct) or (
+                        (ct.replace(tzinfo=timezone.utc) if ct.tzinfo is None else ct) - now
+                    ).total_seconds() / 60 > 90
                 )]
             featured = featured.sort_values(
                 ["kelly_units", "ev_pct"], ascending=False
@@ -141,7 +143,7 @@ def post_picks(final_df: pd.DataFrame, now: datetime = None) -> None:
                 odds = int(r["best_retail_odds"])
                 line = (f"{emoji} {grade:<8} {r['player_name']} · "
                         f"{r['best_retail_book']} {_odds_str(odds)} · "
-                        f"EV +{ev:.1f}% · {kelly:.1f}u · {anchor} · Bet by {bet_by}")
+                        f"EV {ev:+.1f}% · {kelly:.1f}u · {anchor} · Bet by {bet_by}")
                 lines.append(line)
 
             roi, clv = _running_metrics()
@@ -234,6 +236,7 @@ def post_results(date_str: str, now: datetime = None) -> None:
             decimal = float(r.get("best_retail_decimal", _american_to_decimal(odds)))
 
             if pd.isna(r.get("hit_hr")):
+                logging.warning(f"post_results: no outcome for {name} on {date_str} — possible name mismatch")
                 lines.append(f"➖ {name} · scratched — no result")
             elif int(r["hit_hr"]) == 1:
                 pnl = stake * (decimal - 1)
@@ -331,10 +334,7 @@ def post_weekly_recap(now: datetime = None) -> None:
         lines.append("Anchor: Pinnacle/BOL devig · 1u = $25 · Kelly ¼ sizing")
 
         requests.post(recap_wh, json={"content": "\n".join(lines)}, timeout=10).raise_for_status()
-        if os.name == "nt":
-            post_status(f"✅ Weekly recap posted · {sun_str}")
-        else:
-            post_status(f"✅ Weekly recap posted · {sun_str}")
+        post_status(f"✅ Weekly recap posted · {sun_str}")
 
     except Exception as e:
         logging.error(f"post_weekly_recap failed: {e}")
