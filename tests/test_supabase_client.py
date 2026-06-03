@@ -10,6 +10,7 @@ def test_insert_clv_rows_calls_supabase_upsert(monkeypatch):
     sc.insert_clv_rows([{"game_date": "2026-06-03", "player_name": "Aaron Judge"}])
     mock_client.table.assert_called_with("clv_log")
     mock_client.table().upsert.assert_called_once()
+    mock_client.table().upsert().execute.assert_called_once()
 
 
 def test_fetch_clv_log_returns_dataframe(monkeypatch):
@@ -42,6 +43,7 @@ def test_upsert_outcome_calls_supabase(monkeypatch):
     sc.upsert_outcome("2026-06-03", "Aaron Judge", hit_hr=1, hrs_hit=1, at_bats=4)
     mock_client.table.assert_called_with("hr_outcomes")
     mock_client.table().upsert.assert_called_once()
+    mock_client.table().upsert().execute.assert_called_once()
 
 
 def test_client_raises_on_missing_env(monkeypatch):
@@ -50,3 +52,15 @@ def test_client_raises_on_missing_env(monkeypatch):
     import agents.supabase_client as sc
     with pytest.raises(EnvironmentError, match="SUPABASE_URL"):
         sc._client()
+
+
+def test_mark_withdrawn_calls_correct_table_and_filters(monkeypatch):
+    mock_client = MagicMock()
+    import agents.supabase_client as sc
+    monkeypatch.setattr(sc, "_client", lambda: mock_client)
+    sc.mark_withdrawn("2026-06-03", "Aaron Judge")
+    mock_client.table.assert_called_with("clv_log")
+    mock_client.table().update.assert_called_once_with({"withdrawn": True})
+    # Production code chains: .update(...).eq(...).eq(...).execute()
+    mock_client.table().update().eq.assert_called()
+    mock_client.table().update().eq().eq().execute.assert_called_once()
