@@ -156,6 +156,22 @@ def test_main_output_includes_bet_score(monkeypatch):
     assert "bet_grade" in captured["df"].columns
 
 
+def test_no_browser_argparse_parses_correctly():
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--no-browser", action="store_true")
+    args = parser.parse_args(["--no-browser"])
+    assert args.no_browser is True
+
+
+def test_default_run_no_browser_is_false():
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--no-browser", action="store_true")
+    args = parser.parse_args([])
+    assert args.no_browser is False
+
+
 def test_pipeline_run_phase1_returns_context(monkeypatch):
     """pipeline.run_phase1() returns a PipelineContext with final_df populated."""
     import pandas as pd

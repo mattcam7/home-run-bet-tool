@@ -116,6 +116,12 @@ def fetch_player_teams() -> dict:
 
 
 def main() -> None:
+    import argparse
+    parser = argparse.ArgumentParser(description="HR bet tool pipeline")
+    parser.add_argument("--no-browser", action="store_true",
+                        help="Skip browser; post picks to Discord instead")
+    args, _ = parser.parse_known_args()
+
     load_dotenv()
     api_key = os.environ["ODDS_API_KEY"]
     now = datetime.now(timezone.utc)
@@ -188,8 +194,14 @@ def main() -> None:
     else:
         print("No DFS projections found at data/dfs_projections.csv — DFS tab will be empty.")
 
-    generate_dashboard(final_df, parlays=parlays, dfs_data=dfs_data)
-    print("Dashboard opened in browser.")
+    generate_dashboard(final_df, parlays=parlays, dfs_data=dfs_data,
+                       open_browser=not args.no_browser)
+    if args.no_browser:
+        from agents.discord_bot import post_picks
+        post_picks(final_df, now=now)
+        print("Picks posted to Discord.")
+    else:
+        print("Dashboard opened in browser.")
 
 
 if __name__ == "__main__":
