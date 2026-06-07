@@ -422,7 +422,7 @@ class HRClassifier:
         brl_percent, avg_hit_speed, ev95percent, iso  — batter season contact quality
         bat_speed    — batter average bat speed (league mean when pre-2024)
         park_factor  — home stadium HR factor (1.0 = neutral)
-        same_hand    — 1 if batter/pitcher same handedness, 0 if opposite
+        same_hand    — 1 if same handedness (platoon disadvantage), 0 if opposite
         pitcher_hr9  — opposing starter's season HR/9
     """
 
@@ -467,7 +467,7 @@ def _get_or_train_model(batter_dfs: dict[int, pd.DataFrame]) -> HRRateModel:
         age_days = (
             datetime.now() - datetime.fromtimestamp(MODEL_PATH.stat().st_mtime)
         ).days
-        if age_days < 7:
+        if age_days < MODEL_MAX_AGE_DAYS:
             model.load(MODEL_PATH)
             return model
 
@@ -813,7 +813,7 @@ def validate_simulation(df: pd.DataFrame) -> list[str]:
 
     if MODEL_PATH.exists():
         age_days = (datetime.now() - datetime.fromtimestamp(MODEL_PATH.stat().st_mtime)).days
-        if age_days >= 7:
+        if age_days >= MODEL_MAX_AGE_DAYS:
             warnings.append(
                 f"[sim-validate] Model is {age_days} days old — "
                 "delete data/sim_model.pkl to force retrain on next run"
