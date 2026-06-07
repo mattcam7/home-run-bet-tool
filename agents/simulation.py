@@ -20,7 +20,7 @@ from pathlib import Path
 import pandas as pd
 import requests
 from rapidfuzz import fuzz
-from sklearn.linear_model import Ridge
+from sklearn.linear_model import LogisticRegression, Ridge
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 
@@ -33,6 +33,14 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 BATTER_FEATURES = ["brl_percent", "avg_hit_speed", "ev95percent", "iso"]
+GAME_FEATURES = [
+    "brl_percent", "avg_hit_speed", "ev95percent", "iso",
+    "bat_speed", "park_factor", "same_hand", "pitcher_hr9",
+]
+LEAGUE_MEAN_BAT_SPEED = 68.9   # mph — 2024+ Statcast average on all swings
+BAT_SPEED_PATH = Path("data/batter_bat_speed.parquet")
+TRAINING_CACHE_PATH = Path("data/sim_training_cache.parquet")
+MODEL_MAX_AGE_DAYS = 30
 SEASON_WEIGHTS = {2024: 0.10, 2025: 0.30, 2026: 0.60}
 TRAIN_SEASONS = [2024, 2025]
 
@@ -43,6 +51,12 @@ PARK_FACTORS_PATH = Path("data/park_factors.json")
 
 PITCHER_LEAGUE_HR9 = 1.30  # MLB average HR/9 across 2024-2025
 FUZZY_THRESHOLD = 85        # rapidfuzz token_sort_ratio minimum for a match
+
+CURRENT_SEASON = 2026
+# Games needed for the current season to carry its full SEASON_WEIGHTS share.
+# Below this, the weight scales linearly (Bayesian shrinkage toward prior seasons).
+# 100 G ≈ a meaningful mid-season sample; at 10 G the 2026 weight is ~6% of normal.
+MIN_FULL_SAMPLE_G = 100
 
 # Full team name -> 3-letter abbreviation (matches park_factors.json keys)
 TEAM_NAME_TO_ABBREV: dict[str, str] = {
@@ -271,12 +285,15 @@ def _get_weighted_batter_stats(
 ) -> dict | None:
     """
     Return weighted average batter features across seasons.
-    Weight: 2024=10%, 2025=30%, 2026=60% (renormalized for available seasons).
+    Base weights: 2024=10%, 2025=30%, 2026=60%, renormalized for available seasons.
+
+    Current-season weight is shrunk proportionally to games played so that a player
+    with only a handful of 2026 games doesn't let a hot small sample dominate.
+    Effective 2026 weight = base_weight * min(G_2026 / MIN_FULL_SAMPLE_G, 1.0).
     Returns None and logs if no season data found for this player.
     """
-    seasons_found: list[tuple[int, dict]] = []
+    seasons_found: list[tuple[int, dict, int | None]] = []  # (season, features, games)
 
-    # Find each season's row for this player
     for season, df in sorted(batter_dfs.items()):
         if df.empty or "Name" not in df.columns:
             continue
@@ -285,23 +302,33 @@ def _get_weighted_batter_stats(
         if matched is None:
             continue
         row = df[df["Name"] == matched].iloc[0]
-        # Ensure required features present
         stats = {}
         for feat in BATTER_FEATURES:
             stats[feat] = float(row[feat]) if feat in row.index and pd.notna(row[feat]) else None
         if any(v is None for v in stats.values()):
             continue
-        seasons_found.append((season, stats))
+        games = int(row["G"]) if "G" in row.index and pd.notna(row["G"]) else None
+        seasons_found.append((season, stats, games))
 
     if not seasons_found:
         _log_unmatched(player_name, "batter_stats")
         return None
 
-    # Renormalize weights for available seasons
-    total_weight = sum(SEASON_WEIGHTS[s] for s, _ in seasons_found)
+    def _effective_weight(season: int, games: int | None) -> float:
+        base = SEASON_WEIGHTS.get(season, 0.0)
+        if season != CURRENT_SEASON or games is None:
+            return base
+        # Shrink toward prior seasons when current-season sample is small.
+        return base * min(1.0, games / MIN_FULL_SAMPLE_G)
+
+    total_weight = sum(_effective_weight(s, g) for s, _, g in seasons_found)
+    if total_weight == 0:
+        _log_unmatched(player_name, "batter_stats")
+        return None
+
     weighted: dict[str, float] = {feat: 0.0 for feat in BATTER_FEATURES}
-    for season, stats in seasons_found:
-        w = SEASON_WEIGHTS[season] / total_weight
+    for season, stats, games in seasons_found:
+        w = _effective_weight(season, games) / total_weight
         for feat in BATTER_FEATURES:
             weighted[feat] += w * stats[feat]
 
@@ -386,6 +413,49 @@ class HRRateModel:
             self._pipe = pickle.load(f)
 
 
+class HRClassifier:
+    """
+    Logistic regression classifier predicting P(hit_hr=1) from 8 game-level features.
+    Trained on binary player-game Statcast outcomes (2022-2025).
+
+    Features (GAME_FEATURES):
+        brl_percent, avg_hit_speed, ev95percent, iso  — batter season contact quality
+        bat_speed    — batter average bat speed (league mean when pre-2024)
+        park_factor  — home stadium HR factor (1.0 = neutral)
+        same_hand    — 1 if batter/pitcher same handedness, 0 if opposite
+        pitcher_hr9  — opposing starter's season HR/9
+    """
+
+    def __init__(self) -> None:
+        self._pipe: Pipeline | None = None
+
+    def fit(self, df: pd.DataFrame) -> None:
+        train = df.dropna(subset=GAME_FEATURES + ["hit_hr"])
+        X = train[GAME_FEATURES]
+        y = train["hit_hr"].astype(int)
+        self._pipe = Pipeline([
+            ("scaler", StandardScaler()),
+            ("clf", LogisticRegression(C=1.0, max_iter=1000, solver="lbfgs")),
+        ])
+        self._pipe.fit(X, y)
+
+    def predict(self, features: dict) -> float:
+        """Return P(hit_hr=1) as a float in (0, 1)."""
+        if self._pipe is None:
+            raise RuntimeError("HRClassifier is not fitted. Call fit() or load() first.")
+        X = pd.DataFrame([features])[GAME_FEATURES].fillna(0.0)
+        return float(self._pipe.predict_proba(X)[0, 1])
+
+    def save(self, path: str | Path) -> None:
+        Path(path).parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "wb") as f:
+            pickle.dump(self._pipe, f)
+
+    def load(self, path: str | Path) -> None:
+        with open(path, "rb") as f:
+            self._pipe = pickle.load(f)
+
+
 def _get_or_train_model(batter_dfs: dict[int, pd.DataFrame]) -> HRRateModel:
     """
     Load the model from disk if it exists and is < 7 days old.
@@ -444,6 +514,10 @@ def _fetch_probable_starters(today: str) -> dict:
     """
     Returns {team_abbrev: {"name": str, "hand": "R"|"L"|""}} for both home and
     away starters in today's schedule via MLB Stats API.
+
+    The schedule endpoint does not include team abbreviation or pitcher hand in
+    its response. We resolve team abbrev via TEAM_NAME_TO_ABBREV and pitcher
+    hand via a second call to the all-players endpoint (matched by player ID).
     Returns empty dict on any error.
     """
     try:
@@ -453,18 +527,52 @@ def _fetch_probable_starters(today: str) -> dict:
             timeout=15,
         )
         resp.raise_for_status()
+
+        # Collect starters: {team_abbrev: {"name": str, "pitcher_id": int}}
         result: dict = {}
+        pitcher_ids: set[int] = set()
         for date_entry in resp.json().get("dates", []):
             for game in date_entry.get("games", []):
                 for side in ("home", "away"):
                     team_data = game.get("teams", {}).get(side, {})
-                    abbrev = team_data.get("team", {}).get("abbreviation", "")
+                    # Schedule endpoint returns team name, not abbreviation
+                    team_name = team_data.get("team", {}).get("name", "")
+                    abbrev = TEAM_NAME_TO_ABBREV.get(team_name, "")
                     prob = team_data.get("probablePitcher", {})
-                    if abbrev and prob:
-                        result[_normalize_team_abbrev(abbrev)] = {
-                            "name": prob.get("fullName", ""),
-                            "hand": prob.get("pitchHand", {}).get("code", ""),
+                    if abbrev and prob.get("fullName"):
+                        abbrev = _normalize_team_abbrev(abbrev)
+                        pitcher_id = prob.get("id")
+                        result[abbrev] = {
+                            "name": prob["fullName"],
+                            "hand": "",
+                            "_id": pitcher_id,
                         }
+                        if pitcher_id:
+                            pitcher_ids.add(pitcher_id)
+
+        if not result:
+            return result
+
+        # Resolve pitcher handedness from the all-players endpoint
+        try:
+            players_resp = requests.get(
+                "https://statsapi.mlb.com/api/v1/sports/1/players",
+                params={"season": datetime.now(timezone.utc).year, "gameType": "R"},
+                timeout=15,
+            )
+            players_resp.raise_for_status()
+            id_to_hand: dict[int, str] = {}
+            for player in players_resp.json().get("people", []):
+                pid = player.get("id")
+                if pid in pitcher_ids:
+                    id_to_hand[pid] = player.get("pitchHand", {}).get("code", "")
+            for entry in result.values():
+                entry["hand"] = id_to_hand.get(entry.pop("_id", None) or 0, "")
+        except Exception as hand_exc:
+            logger.warning("[simulation] Could not resolve pitcher hands: %s", hand_exc)
+            for entry in result.values():
+                entry.pop("_id", None)
+
         return result
     except Exception as exc:
         logger.warning("[simulation] Could not fetch probable starters: %s", exc)
@@ -564,7 +672,7 @@ def add_simulation(df: pd.DataFrame) -> pd.DataFrame:
     Append simulation columns to final_df and return it.
 
     Added columns:
-        sim_prob    — model-derived P(HR today), clipped to [0.01, 0.60]
+        sim_prob    — model-derived P(HR today), clipped to [0.01, 0.40]
         sim_edge    — sim_prob - pinnacle_prob (positive = sim more bullish)
         convergence — "AGREE" if |sim_edge| < 0.03, else "DIVERGE"
 
@@ -614,9 +722,9 @@ def add_simulation(df: pd.DataFrame) -> pd.DataFrame:
             platoon_factor = _get_platoon_factor(batter_hand, pitcher_hand)
 
             sim_prob = base_prob * park_factor * pitcher_factor * platoon_factor
-            sim_prob = max(0.01, min(0.60, sim_prob))
+            sim_prob = max(0.01, min(0.40, sim_prob))
             sim_prob = apply_correction(row["player_name"], sim_prob)
-            sim_prob = max(0.01, min(0.60, sim_prob))
+            sim_prob = max(0.01, min(0.40, sim_prob))
             sim_probs.append(sim_prob)
 
         df = df.copy()
@@ -643,3 +751,74 @@ def add_simulation(df: pd.DataFrame) -> pd.DataFrame:
         logger.exception("[simulation] Unexpected error — returning df unchanged.")
         print(f"[simulation] WARNING: {exc}. Dashboard will show simulation as unavailable.")
         return df
+
+
+def validate_simulation(df: pd.DataFrame) -> list[str]:
+    """Slate-level sanity checks on simulation output. Returns warning strings.
+
+    Checks:
+      1. Coverage — fewer than 50% of players matched to sim data
+      2. Systematic bias — mean sim_prob is <60% or >140% of mean Pinnacle prob
+      3. Extreme divergences — >25% of matched players have |sim_edge| > 15pp
+      4. Model age — model file older than 7 days should be retrained
+    """
+    warnings: list[str] = []
+
+    if "sim_prob" not in df.columns:
+        warnings.append("[sim-validate] sim_prob column missing — simulation not applied")
+        return warnings
+
+    total = len(df)
+    sim = df["sim_prob"].dropna()
+    covered = len(sim)
+
+    if covered == 0:
+        warnings.append("[sim-validate] No players have sim_prob — simulation produced no output")
+        return warnings
+
+    coverage_pct = covered / total * 100 if total else 0
+    if coverage_pct < 50:
+        warnings.append(
+            f"[sim-validate] Low coverage: {covered}/{total} ({coverage_pct:.0f}%) "
+            "players matched — check sim_unmatched.log"
+        )
+
+    if "pinnacle_prob" in df.columns:
+        pin = pd.to_numeric(df.loc[df["sim_prob"].notna(), "pinnacle_prob"], errors="coerce")
+        mean_sim = float(sim.mean())
+        mean_pin = float(pin.mean()) if len(pin) else 0.0
+        if mean_pin > 0:
+            ratio = mean_sim / mean_pin
+            if ratio < 0.60:
+                warnings.append(
+                    f"[sim-validate] Systematic bearish bias: mean sim={mean_sim:.3f} "
+                    f"vs mean Pinnacle={mean_pin:.3f} (ratio={ratio:.2f}) — "
+                    "model under-predicting HR rates slate-wide"
+                )
+            elif ratio > 1.40:
+                warnings.append(
+                    f"[sim-validate] Systematic bullish bias: mean sim={mean_sim:.3f} "
+                    f"vs mean Pinnacle={mean_pin:.3f} (ratio={ratio:.2f}) — "
+                    "model over-predicting HR rates slate-wide"
+                )
+
+    if "sim_edge" in df.columns and covered > 0:
+        extreme = df["sim_edge"].dropna().abs() > 0.15
+        n_extreme = int(extreme.sum())
+        if n_extreme > 0 and n_extreme / covered > 0.25:
+            warnings.append(
+                f"[sim-validate] {n_extreme}/{covered} players have |sim_edge| > 15pp — "
+                "large divergence between sim and Pinnacle; review model calibration"
+            )
+
+    if MODEL_PATH.exists():
+        age_days = (datetime.now() - datetime.fromtimestamp(MODEL_PATH.stat().st_mtime)).days
+        if age_days >= 7:
+            warnings.append(
+                f"[sim-validate] Model is {age_days} days old — "
+                "delete data/sim_model.pkl to force retrain on next run"
+            )
+    else:
+        warnings.append("[sim-validate] No trained model found — will train on next run")
+
+    return warnings
