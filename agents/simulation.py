@@ -480,8 +480,8 @@ def _get_or_train_model() -> HRClassifier:
 
     print(f"[simulation] Training HRClassifier on game-level Statcast data...")
     train_df = pd.read_parquet(TRAINING_CACHE_PATH)
-    model.fit(train_df)
     n = len(train_df.dropna(subset=GAME_FEATURES + ["hit_hr"]))
+    model.fit(train_df)
     MODEL_PATH.parent.mkdir(parents=True, exist_ok=True)
     model.save(MODEL_PATH)
     print(f"[simulation] Model trained on {n:,} player-game rows, saved to {MODEL_PATH}.")
@@ -664,7 +664,7 @@ def add_simulation(df: pd.DataFrame) -> pd.DataFrame:
     Append simulation columns to final_df and return it.
 
     Added columns:
-        sim_prob    — model-derived P(HR today), clipped to [0.01, 0.40]
+        sim_prob    — model-derived P(HR today), clipped to [0.01, 0.35]
         sim_edge    — sim_prob - pinnacle_prob (positive = sim more bullish)
         convergence — "AGREE" if |sim_edge| < 0.03, else "DIVERGE"
 
@@ -749,9 +749,9 @@ def add_simulation(df: pd.DataFrame) -> pd.DataFrame:
             }
 
             sim_prob = model.predict(features)
-            sim_prob = max(0.01, min(0.40, sim_prob))
+            sim_prob = max(0.01, min(0.35, sim_prob))
             sim_prob = apply_correction(row["player_name"], sim_prob)
-            sim_prob = max(0.01, min(0.40, sim_prob))
+            sim_prob = max(0.01, min(0.35, sim_prob))
             sim_probs.append(sim_prob)
 
         df = df.copy()

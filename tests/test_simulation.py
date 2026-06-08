@@ -327,13 +327,13 @@ class TestAddSimulation:
         assert "sim_prob" in result.columns
         assert "sim_edge" in result.columns
         assert "convergence" in result.columns
-        # Aaron Judge should be matched with valid sim_prob in [0.01, 0.40]
+        # Aaron Judge should be matched with valid sim_prob in [0.01, 0.35]
         matched = result["sim_prob"].dropna()
         assert len(matched) > 0, "No players were matched to simulation data"
-        assert matched.between(0.01, 0.40).all()
+        assert matched.between(0.01, 0.35).all()
         # With elite Statcast stats, sim_prob should be non-trivial
         judge_prob = result.loc[result.index[0], "sim_prob"]
-        assert 0.05 < judge_prob <= 0.40, f"sim_prob {judge_prob:.3f} is implausibly outside 0.05-0.40"
+        assert 0.05 < judge_prob <= 0.35, f"sim_prob {judge_prob:.3f} is outside 0.05-0.35"
 
 
     def test_correction_factor_is_applied_when_available(self, tmp_path, monkeypatch):
@@ -400,8 +400,8 @@ class TestAddSimulation:
         result = add_simulation(df)
         corrected_prob = float(result.iloc[0]["sim_prob"])
 
-        # With factor=2.0 and alpha=0.40, corrected = base * 1.40, capped at 0.40
-        expected = min(0.40, max(0.01, baseline_prob * 1.40))
+        # With factor=2.0 and alpha=0.40, corrected = base * 1.40, capped at 0.35
+        expected = min(0.35, max(0.01, baseline_prob * 1.40))
         assert abs(corrected_prob - expected) < 1e-6, (
             f"Correction not applied: baseline={baseline_prob:.4f}, "
             f"corrected={corrected_prob:.4f}, expected≈{expected:.4f}"
@@ -592,6 +592,12 @@ class TestGetOrTrainModel:
 
         result = sim_mod._get_or_train_model()
         assert isinstance(result, HRClassifier)
+        prob = result.predict({
+            "brl_percent": 10.0, "avg_hit_speed": 90.0, "ev95percent": 44.0,
+            "iso": 0.22, "bat_speed": 69.5, "park_factor": 1.0,
+            "same_hand": 0, "pitcher_hr9": 1.30,
+        })
+        assert 0.0 < prob < 1.0
 
     def test_trains_from_parquet_when_pkl_missing(self, tmp_path, monkeypatch):
         import agents.simulation as sim_mod
