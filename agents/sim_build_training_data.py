@@ -56,7 +56,7 @@ def _aggregate_to_player_game(sc: pd.DataFrame) -> pd.DataFrame:
             "home_team": g["home_team"].iloc[0],
             "stand": g["stand"].mode()[0] if not g["stand"].isna().all() else "",
             "p_throws": g["p_throws"].mode()[0] if not g["p_throws"].isna().all() else "",
-            "opp_pitcher_id": int(opp_pitcher[0]) if len(opp_pitcher) > 0 else -1,
+            "opp_pitcher_id": int(opp_pitcher[0]) if len(opp_pitcher) > 0 else pd.NA,
             "bat_speed_mean": float(g["bat_speed"].mean())
             if has_bat_speed and g["bat_speed"].notna().any()
             else float("nan"),
@@ -95,17 +95,17 @@ def _fetch_pitcher_season_stats(season: int) -> pd.DataFrame:
     if df.empty or "HR" not in df.columns or "IP" not in df.columns:
         return pd.DataFrame(columns=["player_id", "pitcher_hr9"])
 
+    if "mlbID" not in df.columns:
+        return pd.DataFrame(columns=["player_id", "pitcher_hr9"])
+
     df = df.copy()
+    df["player_id"] = pd.to_numeric(df["mlbID"], errors="coerce")
     df["pitcher_hr9"] = df.apply(
         lambda r: float(r["HR"]) / (float(r["IP"]) / 9.0)
         if pd.notna(r["IP"]) and float(r["IP"]) > 0 and pd.notna(r["HR"])
         else PITCHER_LEAGUE_HR9,
         axis=1,
     )
-    if "mlbID" not in df.columns:
-        return pd.DataFrame(columns=["player_id", "pitcher_hr9"])
-
-    df = df.rename(columns={"mlbID": "player_id"})
     return df[["player_id", "pitcher_hr9"]].dropna(subset=["player_id"]).copy()
 
 
@@ -130,7 +130,7 @@ def _build_season(season: int, park_factors: dict) -> tuple[pd.DataFrame, pd.Dat
     import pybaseball  # only imported when a live pull is needed
 
     print(f"  [season {season}] Pulling Statcast for {season} (~20-30 min)...", flush=True)
-    sc = pybaseball.statcast(f"{season}-03-01", f"{season}-11-30", verbose=False)
+    sc = pybaseball.statcast(f"{season}-04-01", f"{season}-11-30", verbose=False)
 
     keep_cols = _STATCAST_BASE_COLS[:]
     if "bat_speed" in sc.columns:
@@ -192,8 +192,12 @@ def _build_season(season: int, park_factors: dict) -> tuple[pd.DataFrame, pd.Dat
     pg = pg.dropna(subset=GAME_FEATURES + ["hit_hr"])
 
     CHECKPOINT_DIR.mkdir(parents=True, exist_ok=True)
-    pg.to_parquet(checkpoint, index=False)
-    bs_df.to_parquet(bs_checkpoint, index=False)
+    tmp_pg = checkpoint.with_suffix(".tmp.parquet")
+    tmp_bs = bs_checkpoint.with_suffix(".tmp.parquet")
+    pg.to_parquet(tmp_pg, index=False)
+    bs_df.to_parquet(tmp_bs, index=False)
+    tmp_pg.replace(checkpoint)
+    tmp_bs.replace(bs_checkpoint)
     print(f"  [season {season}] Done — {len(pg):,} player-game rows. Checkpoint saved.")
     return pg, bs_df
 
