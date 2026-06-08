@@ -602,7 +602,8 @@ def _load_bat_speed_lookup() -> dict[str, float]:
         return {}
     try:
         bs = pd.read_parquet(BAT_SPEED_PATH)
-        if bs.empty or "Name" not in bs.columns or "avg_bat_speed" not in bs.columns:
+        required = {"Name", "avg_bat_speed", "season", "player_id"}
+        if bs.empty or not required.issubset(bs.columns):
             return {}
         latest = bs.sort_values("season").groupby("player_id").last().reset_index()
         return {
@@ -767,7 +768,7 @@ def add_simulation(df: pd.DataFrame) -> pd.DataFrame:
                 continue
 
             park_factor = _get_park_factor(row.get("game", ""), park_factors)
-            pitcher_factor, _pitcher_name, pitcher_hand = _get_pitcher_factor(
+            _pitcher_name, pitcher_hand, pitcher_hr9 = _get_pitcher_info(
                 row, starters, pitcher_dfs
             )
 
@@ -776,9 +777,6 @@ def add_simulation(df: pd.DataFrame) -> pd.DataFrame:
             same_hand = int(
                 bool(batter_hand and pitcher_hand and batter_hand != "S" and batter_hand == pitcher_hand)
             )
-
-            # pitcher_hr9: recover from pitcher_factor (factor = hr9 / league_mean)
-            pitcher_hr9 = pitcher_factor * PITCHER_LEAGUE_HR9
 
             # bat_speed: use name-keyed lookup, fall back to league mean
             bat_speed = bat_speed_lookup.get(norm_name, LEAGUE_MEAN_BAT_SPEED)
