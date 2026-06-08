@@ -130,81 +130,8 @@ class TestGetPitcherStatsByName:
         assert result is not None
 
 
-import numpy as np
-from agents.simulation import HRRateModel, BATTER_FEATURES
-
-
-def _make_training_df(n: int = 50) -> pd.DataFrame:
-    """
-    Synthetic training data with plausible feature ranges and realistic signal.
-    Features match BATTER_FEATURES: brl_percent, avg_hit_speed, ev95percent, iso.
-    hr_per_game is derived from features (like real data) so that Ridge can
-    learn positive coefficients for power metrics.
-    """
-    rng = np.random.default_rng(42)
-    brl = rng.uniform(4, 18, n)           # brl_percent (Barrel%)
-    ev = rng.uniform(85, 95, n)            # avg_hit_speed (exit velocity)
-    hard = rng.uniform(30, 55, n)          # ev95percent (hard hit %)
-    iso = rng.uniform(0.10, 0.35, n)       # iso (slugging - batting avg)
-    # hr_per_game has a realistic positive relationship with power metrics
-    hr_per_game = (
-        0.004 * brl
-        + 0.15 * iso
-        + 0.001 * hard
-        + 0.001 * ev
-        + rng.normal(0, 0.005, n)  # small noise
-    ).clip(0)
-    data = {
-        "brl_percent": brl,
-        "avg_hit_speed": ev,
-        "ev95percent": hard,
-        "iso": iso,
-        "HR": (hr_per_game * 140).astype(int),
-        "G": np.full(n, 140),
-        "hr_per_game": hr_per_game,
-    }
-    return pd.DataFrame(data)
-
-
-class TestHRRateModel:
-    def test_fit_and_predict_returns_nonneg_float(self):
-        model = HRRateModel()
-        train_df = _make_training_df(50)
-        model.fit(train_df)
-        features = {"brl_percent": 10.0, "avg_hit_speed": 90.0, "ev95percent": 44.0, "iso": 0.22}
-        result = model.predict(features)
-        assert isinstance(result, float)
-        assert result >= 0.0
-
-    def test_higher_barrel_pct_predicts_higher_hr_rate(self):
-        model = HRRateModel()
-        train_df = _make_training_df(200)
-        model.fit(train_df)
-        base = {"avg_hit_speed": 90.0, "ev95percent": 44.0, "iso": 0.22}
-        low = model.predict({**base, "brl_percent": 4.0})
-        high = model.predict({**base, "brl_percent": 18.0})
-        assert high > low
-
-    def test_save_and_load_round_trip(self, tmp_path):
-        model = HRRateModel()
-        train_df = _make_training_df(50)
-        model.fit(train_df)
-        path = str(tmp_path / "model.pkl")
-        model.save(path)
-        model2 = HRRateModel()
-        model2.load(path)
-        features = {"brl_percent": 10.0, "avg_hit_speed": 90.0, "ev95percent": 44.0, "iso": 0.22}
-        assert abs(model.predict(features) - model2.predict(features)) < 1e-9
-
-    def test_predict_before_fit_raises(self):
-        model = HRRateModel()
-        with pytest.raises(RuntimeError, match="not fitted"):
-            model.predict({"brl_percent": 10.0, "avg_hit_speed": 90.0, "ev95percent": 42.0, "iso": 0.2})
-
-
 from agents.simulation import (
     _get_park_factor,
-    _get_platoon_factor,
     add_simulation,
     validate_simulation,
 )
@@ -234,25 +161,6 @@ class TestGetParkFactor:
         park_factors = {"COL": 1.198}
         result = _get_park_factor("Los Angeles Dodgers @ Colorado Rockies", park_factors)
         assert result > 1.0
-
-
-class TestGetPlatoonFactor:
-    def test_opposite_hand_favorable(self):
-        assert _get_platoon_factor("L", "R") == 1.05
-        assert _get_platoon_factor("R", "L") == 1.05
-
-    def test_same_hand_unfavorable(self):
-        assert _get_platoon_factor("L", "L") == 0.95
-        assert _get_platoon_factor("R", "R") == 0.95
-
-    def test_switch_hitter_neutral(self):
-        assert _get_platoon_factor("S", "R") == 1.0
-        assert _get_platoon_factor("S", "L") == 1.0
-
-    def test_unknown_hand_neutral(self):
-        assert _get_platoon_factor("", "R") == 1.0
-        assert _get_platoon_factor("R", "") == 1.0
-        assert _get_platoon_factor("", "") == 1.0
 
 
 class TestAddSimulation:

@@ -20,7 +20,7 @@ from pathlib import Path
 import pandas as pd
 import requests
 from rapidfuzz import fuzz
-from sklearn.linear_model import LogisticRegression, Ridge
+from sklearn.linear_model import LogisticRegression
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 
@@ -40,7 +40,6 @@ BAT_SPEED_PATH = Path("data/batter_bat_speed.parquet")
 TRAINING_CACHE_PATH = Path("data/sim_training_cache.parquet")
 MODEL_MAX_AGE_DAYS = 30
 SEASON_WEIGHTS = {2024: 0.10, 2025: 0.30, 2026: 0.60}
-TRAIN_SEASONS = [2024, 2025]
 
 CACHE_DIR = Path("data/sim_cache")
 MODEL_PATH = Path("data/sim_model.pkl")
@@ -359,58 +358,6 @@ def _get_pitcher_stats_by_name(
     return None
 
 
-# ---------------------------------------------------------------------------
-# HRRateModel — Ridge regression on batter contact stats
-# ---------------------------------------------------------------------------
-
-
-class HRRateModel:
-    """
-    Ridge-regularized linear regression model predicting hr_per_game.
-    Features: Barrel%, ISO, FB%, Hard%, EV (avg exit velocity).
-    Interface stable for v2 upgrade (swap Ridge for XGBoost without changing callers).
-    """
-
-    def __init__(self) -> None:
-        self._pipe: Pipeline | None = None
-
-    def fit(self, df: pd.DataFrame) -> None:
-        """
-        Train on a DataFrame that contains BATTER_FEATURES and 'hr_per_game' column.
-        Rows with any NaN in features or label are dropped automatically.
-        """
-        train = df.dropna(subset=BATTER_FEATURES + ["hr_per_game"])
-        X = train[BATTER_FEATURES]
-        y = train["hr_per_game"]
-        self._pipe = Pipeline([
-            ("scaler", StandardScaler()),
-            ("ridge", Ridge(alpha=1.0)),
-        ])
-        self._pipe.fit(X, y)
-
-    def predict(self, features: dict) -> float:
-        """
-        Predict hr_per_game for a single player given a feature dict.
-        Returns a non-negative float (Ridge can predict < 0; clipped at 0.0).
-        """
-        if self._pipe is None:
-            raise RuntimeError("HRRateModel is not fitted. Call fit() or load() first.")
-        X = pd.DataFrame([features])[BATTER_FEATURES].fillna(0.0)
-        val = float(self._pipe.predict(X)[0])
-        return max(0.0, val)
-
-    def save(self, path: str | Path) -> None:
-        """Serialize the fitted pipeline to a pickle file."""
-        Path(path).parent.mkdir(parents=True, exist_ok=True)
-        with open(path, "wb") as f:
-            pickle.dump(self._pipe, f)
-
-    def load(self, path: str | Path) -> None:
-        """Load a previously saved pipeline from disk."""
-        with open(path, "rb") as f:
-            self._pipe = pickle.load(f)
-
-
 class HRClassifier:
     """
     Logistic regression classifier predicting P(hit_hr=1) from 8 game-level features.
@@ -616,54 +563,6 @@ def _load_bat_speed_lookup() -> dict[str, float]:
         return {}
 
 
-def _get_pitcher_factor(
-    row: pd.Series,
-    starters: dict,
-    pitcher_dfs: dict[int, pd.DataFrame],
-) -> tuple[float, str, str]:
-    """
-    Returns (pitcher_factor, opposing_pitcher_name, pitcher_hand).
-    pitcher_factor = (pitcher_HR/9) / PITCHER_LEAGUE_HR9, capped [0.5, 2.0].
-    Defaults to (1.0, "", "") when data is unavailable.
-    """
-    game = str(row.get("game", ""))
-    batter_team = str(row.get("team", ""))
-
-    if " @ " not in game or not batter_team:
-        return 1.0, "", ""
-
-    away_name, home_name = game.split(" @ ", 1)
-    away_abbrev = TEAM_NAME_TO_ABBREV.get(away_name.strip(), "")
-    home_abbrev = TEAM_NAME_TO_ABBREV.get(home_name.strip(), "")
-
-    batter_team = _normalize_team_abbrev(batter_team)
-
-    # Batter faces the OPPOSING team's starter
-    if batter_team == home_abbrev:
-        opposing_abbrev = away_abbrev
-    elif batter_team == away_abbrev:
-        opposing_abbrev = home_abbrev
-    else:
-        return 1.0, "", ""
-
-    starter_info = starters.get(opposing_abbrev, {})
-    pitcher_name = starter_info.get("name", "")
-    pitcher_hand = starter_info.get("hand", "")
-
-    if not pitcher_name:
-        return 1.0, pitcher_name, pitcher_hand
-
-    pitcher_stats = _get_pitcher_stats_by_name(pitcher_name, pitcher_dfs)
-    if pitcher_stats is None or pitcher_stats.get("IP", 0) < 5:
-        # Rookie or insufficient sample — default to league neutral
-        return 1.0, pitcher_name, pitcher_hand
-
-    hr9 = pitcher_stats.get("HR/9", PITCHER_LEAGUE_HR9)
-    factor = hr9 / PITCHER_LEAGUE_HR9
-    factor = max(0.5, min(2.0, factor))
-    return factor, pitcher_name, pitcher_hand
-
-
 def _get_pitcher_info(
     row: pd.Series,
     starters: dict,
@@ -703,17 +602,6 @@ def _get_pitcher_info(
         return pitcher_name, pitcher_hand, PITCHER_LEAGUE_HR9
 
     return pitcher_name, pitcher_hand, pitcher_stats.get("HR/9", PITCHER_LEAGUE_HR9)
-
-
-def _get_platoon_factor(batter_hand: str, pitcher_hand: str) -> float:
-    """
-    Opposite-hand matchup (LvR or RvL) = favorable = 1.05.
-    Same-hand matchup (LvL or RvR) = unfavorable = 0.95.
-    Switch hitter (S) or either hand unknown = neutral = 1.0.
-    """
-    if not batter_hand or not pitcher_hand or batter_hand == "S":
-        return 1.0
-    return 1.05 if batter_hand != pitcher_hand else 0.95
 
 
 # ---------------------------------------------------------------------------
