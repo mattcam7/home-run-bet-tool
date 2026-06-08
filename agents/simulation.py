@@ -24,8 +24,6 @@ from sklearn.linear_model import LogisticRegression, Ridge
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 
-from agents.ml_retrain import apply_correction
-
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -595,6 +593,28 @@ def _fetch_batter_hands() -> dict:
         return {}
 
 
+def _load_bat_speed_lookup() -> dict[str, float]:
+    """
+    Load {normalized_player_name: avg_bat_speed} from data/batter_bat_speed.parquet.
+    Uses the most recent season's value per player. Returns empty dict if file missing.
+    """
+    if not BAT_SPEED_PATH.exists():
+        return {}
+    try:
+        bs = pd.read_parquet(BAT_SPEED_PATH)
+        if bs.empty or "Name" not in bs.columns or "avg_bat_speed" not in bs.columns:
+            return {}
+        latest = bs.sort_values("season").groupby("player_id").last().reset_index()
+        return {
+            _normalize_name(str(n)): float(s)
+            for n, s in zip(latest["Name"], latest["avg_bat_speed"])
+            if pd.notna(s) and pd.notna(n)
+        }
+    except Exception as exc:
+        logger.warning("[simulation] Could not load bat speed sidecar: %s", exc)
+        return {}
+
+
 def _get_pitcher_factor(
     row: pd.Series,
     starters: dict,
@@ -641,6 +661,47 @@ def _get_pitcher_factor(
     factor = hr9 / PITCHER_LEAGUE_HR9
     factor = max(0.5, min(2.0, factor))
     return factor, pitcher_name, pitcher_hand
+
+
+def _get_pitcher_info(
+    row: pd.Series,
+    starters: dict,
+    pitcher_dfs: dict[int, pd.DataFrame],
+) -> tuple[str, str, float]:
+    """
+    Returns (pitcher_name, pitcher_hand, pitcher_hr9) for the opposing starter.
+    Defaults to ("", "", PITCHER_LEAGUE_HR9) when data is unavailable.
+    """
+    game = str(row.get("game", ""))
+    batter_team = str(row.get("team", ""))
+
+    if " @ " not in game or not batter_team:
+        return "", "", PITCHER_LEAGUE_HR9
+
+    away_name, home_name = game.split(" @ ", 1)
+    away_abbrev = TEAM_NAME_TO_ABBREV.get(away_name.strip(), "")
+    home_abbrev = TEAM_NAME_TO_ABBREV.get(home_name.strip(), "")
+    batter_team_norm = _normalize_team_abbrev(batter_team)
+
+    if batter_team_norm == home_abbrev:
+        opposing_abbrev = away_abbrev
+    elif batter_team_norm == away_abbrev:
+        opposing_abbrev = home_abbrev
+    else:
+        return "", "", PITCHER_LEAGUE_HR9
+
+    starter_info = starters.get(opposing_abbrev, {})
+    pitcher_name = starter_info.get("name", "")
+    pitcher_hand = starter_info.get("hand", "")
+
+    if not pitcher_name:
+        return pitcher_name, pitcher_hand, PITCHER_LEAGUE_HR9
+
+    pitcher_stats = _get_pitcher_stats_by_name(pitcher_name, pitcher_dfs)
+    if pitcher_stats is None or pitcher_stats.get("IP", 0) < 5:
+        return pitcher_name, pitcher_hand, PITCHER_LEAGUE_HR9
+
+    return pitcher_name, pitcher_hand, pitcher_stats.get("HR/9", PITCHER_LEAGUE_HR9)
 
 
 def _get_platoon_factor(batter_hand: str, pitcher_hand: str) -> float:
@@ -695,15 +756,8 @@ def add_simulation(df: pd.DataFrame) -> pd.DataFrame:
         # Get/train model
         model = _get_or_train_model()
 
-        # Load batter bat speeds for the game-level feature (best-effort)
-        bat_speed_lookup: dict[str, float] = {}
-        if BAT_SPEED_PATH.exists():
-            try:
-                bs_df = pd.read_parquet(BAT_SPEED_PATH)
-                if "player_id" in bs_df.columns and "bat_speed" in bs_df.columns:
-                    bat_speed_lookup = dict(zip(bs_df["player_id"].astype(str), bs_df["bat_speed"]))
-            except Exception:
-                pass
+        # Load batter bat speeds for the game-level feature (best-effort, name-keyed)
+        bat_speed_lookup: dict[str, float] = _load_bat_speed_lookup()
 
         sim_probs: list[float | None] = []
         for _, row in df.iterrows():
@@ -726,18 +780,8 @@ def add_simulation(df: pd.DataFrame) -> pd.DataFrame:
             # pitcher_hr9: recover from pitcher_factor (factor = hr9 / league_mean)
             pitcher_hr9 = pitcher_factor * PITCHER_LEAGUE_HR9
 
-            # bat_speed: use lookup keyed by player_id from batter_dfs, fall back to league mean
-            bat_speed = LEAGUE_MEAN_BAT_SPEED
-            for _season, bdf in batter_dfs.items():
-                if bdf.empty or "Name" not in bdf.columns or "player_id" not in bdf.columns:
-                    continue
-                candidates = bdf["Name"].tolist()
-                matched = _match_player(row["player_name"], candidates)
-                if matched is not None:
-                    pid = str(bdf.loc[bdf["Name"] == matched, "player_id"].iloc[0])
-                    if pid in bat_speed_lookup:
-                        bat_speed = bat_speed_lookup[pid]
-                    break
+            # bat_speed: use name-keyed lookup, fall back to league mean
+            bat_speed = bat_speed_lookup.get(norm_name, LEAGUE_MEAN_BAT_SPEED)
 
             # Assemble full 8-feature dict for HRClassifier
             features = {
@@ -749,8 +793,6 @@ def add_simulation(df: pd.DataFrame) -> pd.DataFrame:
             }
 
             sim_prob = model.predict(features)
-            sim_prob = max(0.01, min(0.35, sim_prob))
-            sim_prob = apply_correction(row["player_name"], sim_prob)
             sim_prob = max(0.01, min(0.35, sim_prob))
             sim_probs.append(sim_prob)
 

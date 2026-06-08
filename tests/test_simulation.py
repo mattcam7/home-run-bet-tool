@@ -286,19 +286,13 @@ class TestAddSimulation:
         assert list(result.columns) == list(df.columns)
 
     def test_adds_sim_columns_when_data_available(self, tmp_path, monkeypatch):
-        """With mocked fetch functions and no network calls, sim columns are added correctly."""
+        """With mocked fetch functions and a pre-trained model, sim columns are added."""
         import agents.simulation as sim_mod
 
         monkeypatch.setattr(sim_mod, "CACHE_DIR", tmp_path / "sim_cache")
         monkeypatch.setattr(sim_mod, "MODEL_PATH", tmp_path / "sim_model.pkl")
         monkeypatch.setattr(sim_mod, "UNMATCHED_LOG", tmp_path / "sim_unmatched.log")
 
-        # Provide a training cache so _get_or_train_model() can train when pkl is absent
-        training_cache = _make_game_training_df(200)
-        training_cache.to_parquet(tmp_path / "cache.parquet", index=False)
-        monkeypatch.setattr(sim_mod, "TRAINING_CACHE_PATH", tmp_path / "cache.parquet")
-
-        # Build mock batter DataFrame using Statcast column names
         import numpy as np
         rng = np.random.default_rng(0)
         n = 10
@@ -311,101 +305,29 @@ class TestAddSimulation:
             "HR": [54] + list(rng.integers(5, 40, n - 1)),
             "G": [159] + list(rng.integers(80, 162, n - 1)),
         })
+        mock_pitcher_df = pd.DataFrame([{"Name": "Gerrit Cole", "HR/9": 1.1, "IP": 80.0}])
 
-        mock_pitcher_df = pd.DataFrame([
-            {"Name": "Gerrit Cole", "HR/9": 1.1, "IP": 80.0}
-        ])
-
-        # Monkeypatch fetch functions to avoid any live network calls
         monkeypatch.setattr(sim_mod, "_fetch_batter_stats", lambda season: mock_batter_df)
         monkeypatch.setattr(sim_mod, "_fetch_pitcher_stats", lambda season: mock_pitcher_df)
         monkeypatch.setattr(sim_mod, "_fetch_probable_starters", lambda today: {})
         monkeypatch.setattr(sim_mod, "_fetch_batter_hands", lambda: {})
+        monkeypatch.setattr(sim_mod, "_load_bat_speed_lookup", lambda: {"Aaron Judge": 74.2})
+
+        # Pre-train a classifier so add_simulation doesn't need the parquet cache
+        clf = HRClassifier()
+        clf.fit(_make_game_training_df(200))
+        monkeypatch.setattr(sim_mod, "_get_or_train_model", lambda: clf)
 
         df = self._make_final_df()
         result = add_simulation(df)
         assert "sim_prob" in result.columns
         assert "sim_edge" in result.columns
         assert "convergence" in result.columns
-        # Aaron Judge should be matched with valid sim_prob in [0.01, 0.35]
         matched = result["sim_prob"].dropna()
-        assert len(matched) > 0, "No players were matched to simulation data"
+        assert len(matched) > 0
         assert matched.between(0.01, 0.35).all()
-        # With elite Statcast stats, sim_prob should be non-trivial
         judge_prob = result.loc[result.index[0], "sim_prob"]
         assert 0.05 < judge_prob <= 0.35, f"sim_prob {judge_prob:.3f} is outside 0.05-0.35"
-
-
-    def test_correction_factor_is_applied_when_available(self, tmp_path, monkeypatch):
-        """sim_prob should be nudged by correction factor when models/correction_factors.json exists."""
-        import json
-        from pathlib import Path
-        import agents.simulation as sim_mod
-        from agents import ml_retrain
-
-        # Monkeypatch fetch functions so sim_prob is always computed (no live network)
-        import numpy as np
-        rng = np.random.default_rng(7)
-        n = 10
-        mock_batter_df = pd.DataFrame({
-            "Name": ["Matt Olson"] + [f"Player{i}" for i in range(n - 1)],
-            "brl_percent": [18.0] + list(rng.uniform(4, 18, n - 1)),
-            "avg_hit_speed": [94.0] + list(rng.uniform(85, 95, n - 1)),
-            "ev95percent": [55.0] + list(rng.uniform(30, 55, n - 1)),
-            "iso": [0.30] + list(rng.uniform(0.10, 0.35, n - 1)),
-            "HR": [40] + list(rng.integers(5, 40, n - 1)),
-            "G": [155] + list(rng.integers(80, 162, n - 1)),
-        })
-        mock_pitcher_df = pd.DataFrame([{"Name": "Dummy Pitcher", "HR/9": 1.3, "IP": 100.0}])
-
-        monkeypatch.setattr(sim_mod, "CACHE_DIR", tmp_path / "sim_cache")
-        monkeypatch.setattr(sim_mod, "MODEL_PATH", tmp_path / "sim_model.pkl")
-        monkeypatch.setattr(sim_mod, "UNMATCHED_LOG", tmp_path / "sim_unmatched.log")
-
-        # Provide a training cache so _get_or_train_model() can train when pkl is absent
-        training_cache = _make_game_training_df(200)
-        training_cache.to_parquet(tmp_path / "cache.parquet", index=False)
-        monkeypatch.setattr(sim_mod, "TRAINING_CACHE_PATH", tmp_path / "cache.parquet")
-
-        monkeypatch.setattr(sim_mod, "_fetch_batter_stats", lambda season: mock_batter_df)
-        monkeypatch.setattr(sim_mod, "_fetch_pitcher_stats", lambda season: mock_pitcher_df)
-        monkeypatch.setattr(sim_mod, "_fetch_probable_starters", lambda today: {})
-        monkeypatch.setattr(sim_mod, "_fetch_batter_hands", lambda: {})
-
-        df = pd.DataFrame([{
-            "player_name": "Matt Olson",
-            "game": "SF Giants @ Atlanta Braves",
-            "commence_time": pd.Timestamp("2026-06-10 19:20:00", tz="UTC"),
-            "pinnacle_prob": 0.15,
-            "ev_pct": 0.05,
-        }])
-
-        # Run without correction factors to get the baseline
-        no_cf_path = tmp_path / "nonexistent.json"
-        monkeypatch.setattr(ml_retrain, "CORRECTION_PATH", no_cf_path)
-        baseline = add_simulation(df)
-        if "sim_prob" not in baseline.columns or pd.isna(baseline.iloc[0]["sim_prob"]):
-            pytest.skip("sim_prob not available (stats not fetched in test env)")
-        baseline_prob = float(baseline.iloc[0]["sim_prob"])
-
-        # Write a correction factor with factor=2.0, n=100 (alpha=min(100/200,0.40)=0.40)
-        # Expected: base_prob * (0.40*2.0 + 0.60) = base_prob * 1.40
-        cf = {"Matt Olson": {"factor": 2.0, "n": 100, "actual_rate": 0.30, "predicted_rate": 0.15}}
-        cf_path = tmp_path / "cf.json"
-        cf_path.write_text(json.dumps(cf))
-        monkeypatch.setattr(ml_retrain, "CORRECTION_PATH", cf_path)
-
-        # Re-run with correction factor active; use fresh model path to force retrain
-        monkeypatch.setattr(sim_mod, "MODEL_PATH", tmp_path / "sim_model2.pkl")
-        result = add_simulation(df)
-        corrected_prob = float(result.iloc[0]["sim_prob"])
-
-        # With factor=2.0 and alpha=0.40, corrected = base * 1.40, capped at 0.35
-        expected = min(0.35, max(0.01, baseline_prob * 1.40))
-        assert abs(corrected_prob - expected) < 1e-6, (
-            f"Correction not applied: baseline={baseline_prob:.4f}, "
-            f"corrected={corrected_prob:.4f}, expected≈{expected:.4f}"
-        )
 
 
 def test_add_simulation_importable_from_run():
