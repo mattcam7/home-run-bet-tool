@@ -456,12 +456,13 @@ class HRClassifier:
             self._pipe = pickle.load(f)
 
 
-def _get_or_train_model(batter_dfs: dict[int, pd.DataFrame]) -> HRRateModel:
+def _get_or_train_model() -> HRClassifier:
     """
-    Load the model from disk if it exists and is < 7 days old.
-    Otherwise retrain on TRAIN_SEASONS (2024+2025) and save.
+    Load HRClassifier from data/sim_model.pkl if < MODEL_MAX_AGE_DAYS old.
+    Otherwise load data/sim_training_cache.parquet and train a new classifier.
+    Raises RuntimeError if neither pkl nor cache exists (caught by add_simulation).
     """
-    model = HRRateModel()
+    model = HRClassifier()
 
     if MODEL_PATH.exists():
         age_days = (
@@ -471,28 +472,19 @@ def _get_or_train_model(batter_dfs: dict[int, pd.DataFrame]) -> HRRateModel:
             model.load(MODEL_PATH)
             return model
 
-    # Retrain
-    print("[simulation] Training model on 2024-2025 Statcast + Baseball Reference data...")
-    frames = []
-    for season in TRAIN_SEASONS:
-        df = batter_dfs.get(season)
-        if df is None or df.empty:
-            continue
-        df = df.copy()
-        df["hr_per_game"] = df["HR"] / df["G"].replace(0, pd.NA)
-        frames.append(df.dropna(subset=BATTER_FEATURES + ["hr_per_game"]))
-
-    if not frames:
+    if not TRAINING_CACHE_PATH.exists():
         raise RuntimeError(
-            "[simulation] No training data available for seasons "
-            f"{TRAIN_SEASONS}. Cannot train model."
+            f"[simulation] Training cache not found at {TRAINING_CACHE_PATH}. "
+            "Run: python -m agents.sim_build_training_data"
         )
 
-    train_df = pd.concat(frames, ignore_index=True)
+    print(f"[simulation] Training HRClassifier on game-level Statcast data...")
+    train_df = pd.read_parquet(TRAINING_CACHE_PATH)
     model.fit(train_df)
+    n = len(train_df.dropna(subset=GAME_FEATURES + ["hit_hr"]))
     MODEL_PATH.parent.mkdir(parents=True, exist_ok=True)
     model.save(MODEL_PATH)
-    print(f"[simulation] Model trained on {len(train_df)} rows and saved to {MODEL_PATH}.")
+    print(f"[simulation] Model trained on {n:,} player-game rows, saved to {MODEL_PATH}.")
     return model
 
 
@@ -701,7 +693,17 @@ def add_simulation(df: pd.DataFrame) -> pd.DataFrame:
             park_factors = json.load(f)
 
         # Get/train model
-        model = _get_or_train_model(batter_dfs)
+        model = _get_or_train_model()
+
+        # Load batter bat speeds for the game-level feature (best-effort)
+        bat_speed_lookup: dict[str, float] = {}
+        if BAT_SPEED_PATH.exists():
+            try:
+                bs_df = pd.read_parquet(BAT_SPEED_PATH)
+                if "player_id" in bs_df.columns and "bat_speed" in bs_df.columns:
+                    bat_speed_lookup = dict(zip(bs_df["player_id"].astype(str), bs_df["bat_speed"]))
+            except Exception:
+                pass
 
         sim_probs: list[float | None] = []
         for _, row in df.iterrows():
@@ -710,8 +712,6 @@ def add_simulation(df: pd.DataFrame) -> pd.DataFrame:
                 sim_probs.append(None)
                 continue
 
-            base_prob = model.predict(stats)
-
             park_factor = _get_park_factor(row.get("game", ""), park_factors)
             pitcher_factor, _pitcher_name, pitcher_hand = _get_pitcher_factor(
                 row, starters, pitcher_dfs
@@ -719,9 +719,36 @@ def add_simulation(df: pd.DataFrame) -> pd.DataFrame:
 
             norm_name = _normalize_name(row["player_name"])
             batter_hand = batter_hands.get(norm_name, "")
-            platoon_factor = _get_platoon_factor(batter_hand, pitcher_hand)
+            same_hand = int(
+                bool(batter_hand and pitcher_hand and batter_hand != "S" and batter_hand == pitcher_hand)
+            )
 
-            sim_prob = base_prob * park_factor * pitcher_factor * platoon_factor
+            # pitcher_hr9: recover from pitcher_factor (factor = hr9 / league_mean)
+            pitcher_hr9 = pitcher_factor * PITCHER_LEAGUE_HR9
+
+            # bat_speed: use lookup keyed by player_id from batter_dfs, fall back to league mean
+            bat_speed = LEAGUE_MEAN_BAT_SPEED
+            for _season, bdf in batter_dfs.items():
+                if bdf.empty or "Name" not in bdf.columns or "player_id" not in bdf.columns:
+                    continue
+                candidates = bdf["Name"].tolist()
+                matched = _match_player(row["player_name"], candidates)
+                if matched is not None:
+                    pid = str(bdf.loc[bdf["Name"] == matched, "player_id"].iloc[0])
+                    if pid in bat_speed_lookup:
+                        bat_speed = bat_speed_lookup[pid]
+                    break
+
+            # Assemble full 8-feature dict for HRClassifier
+            features = {
+                **stats,  # brl_percent, avg_hit_speed, ev95percent, iso
+                "bat_speed": bat_speed,
+                "park_factor": park_factor,
+                "same_hand": float(same_hand),
+                "pitcher_hr9": pitcher_hr9,
+            }
+
+            sim_prob = model.predict(features)
             sim_prob = max(0.01, min(0.40, sim_prob))
             sim_prob = apply_correction(row["player_name"], sim_prob)
             sim_prob = max(0.01, min(0.40, sim_prob))
@@ -819,6 +846,9 @@ def validate_simulation(df: pd.DataFrame) -> list[str]:
                 "delete data/sim_model.pkl to force retrain on next run"
             )
     else:
-        warnings.append("[sim-validate] No trained model found — will train on next run")
+        warnings.append(
+            "[sim-validate] No trained model found — "
+            "run 'python -m agents.sim_build_training_data' then run the dashboard"
+        )
 
     return warnings

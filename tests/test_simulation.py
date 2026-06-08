@@ -293,6 +293,11 @@ class TestAddSimulation:
         monkeypatch.setattr(sim_mod, "MODEL_PATH", tmp_path / "sim_model.pkl")
         monkeypatch.setattr(sim_mod, "UNMATCHED_LOG", tmp_path / "sim_unmatched.log")
 
+        # Provide a training cache so _get_or_train_model() can train when pkl is absent
+        training_cache = _make_game_training_df(200)
+        training_cache.to_parquet(tmp_path / "cache.parquet", index=False)
+        monkeypatch.setattr(sim_mod, "TRAINING_CACHE_PATH", tmp_path / "cache.parquet")
+
         # Build mock batter DataFrame using Statcast column names
         import numpy as np
         rng = np.random.default_rng(0)
@@ -356,6 +361,12 @@ class TestAddSimulation:
         monkeypatch.setattr(sim_mod, "CACHE_DIR", tmp_path / "sim_cache")
         monkeypatch.setattr(sim_mod, "MODEL_PATH", tmp_path / "sim_model.pkl")
         monkeypatch.setattr(sim_mod, "UNMATCHED_LOG", tmp_path / "sim_unmatched.log")
+
+        # Provide a training cache so _get_or_train_model() can train when pkl is absent
+        training_cache = _make_game_training_df(200)
+        training_cache.to_parquet(tmp_path / "cache.parquet", index=False)
+        monkeypatch.setattr(sim_mod, "TRAINING_CACHE_PATH", tmp_path / "cache.parquet")
+
         monkeypatch.setattr(sim_mod, "_fetch_batter_stats", lambda season: mock_batter_df)
         monkeypatch.setattr(sim_mod, "_fetch_pitcher_stats", lambda season: mock_pitcher_df)
         monkeypatch.setattr(sim_mod, "_fetch_probable_starters", lambda today: {})
@@ -568,3 +579,36 @@ class TestHRClassifier:
         assert "park_factor" in GAME_FEATURES
         assert "same_hand" in GAME_FEATURES
         assert "pitcher_hr9" in GAME_FEATURES
+
+
+class TestGetOrTrainModel:
+    def test_loads_from_pkl_when_fresh(self, tmp_path, monkeypatch):
+        import agents.simulation as sim_mod
+        monkeypatch.setattr(sim_mod, "MODEL_PATH", tmp_path / "model.pkl")
+
+        clf = HRClassifier()
+        clf.fit(_make_game_training_df(100))
+        clf.save(tmp_path / "model.pkl")
+
+        result = sim_mod._get_or_train_model()
+        assert isinstance(result, HRClassifier)
+
+    def test_trains_from_parquet_when_pkl_missing(self, tmp_path, monkeypatch):
+        import agents.simulation as sim_mod
+        monkeypatch.setattr(sim_mod, "MODEL_PATH", tmp_path / "model.pkl")
+        monkeypatch.setattr(sim_mod, "TRAINING_CACHE_PATH", tmp_path / "cache.parquet")
+
+        cache = _make_game_training_df(200)
+        cache.to_parquet(tmp_path / "cache.parquet", index=False)
+
+        result = sim_mod._get_or_train_model()
+        assert isinstance(result, HRClassifier)
+        assert (tmp_path / "model.pkl").exists()
+
+    def test_raises_when_both_pkl_and_cache_missing(self, tmp_path, monkeypatch):
+        import agents.simulation as sim_mod
+        monkeypatch.setattr(sim_mod, "MODEL_PATH", tmp_path / "model.pkl")
+        monkeypatch.setattr(sim_mod, "TRAINING_CACHE_PATH", tmp_path / "cache.parquet")
+
+        with pytest.raises(RuntimeError, match="sim_build_training_data"):
+            sim_mod._get_or_train_model()
