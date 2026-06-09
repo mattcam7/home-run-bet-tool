@@ -409,6 +409,7 @@ def _build_season(season: int, park_factors: dict) -> tuple[pd.DataFrame, pd.Dat
     if "rolling_pitcher_gb_pct" not in pg.columns:
         pg["rolling_pitcher_gb_pct"] = LEAGUE_MEAN_GB_PCT
     pg["rolling_pitcher_gb_pct"] = pg["rolling_pitcher_gb_pct"].fillna(LEAGUE_MEAN_GB_PCT)
+    pg["pitcher_gb_pct"] = pg["rolling_pitcher_gb_pct"]
 
     # Batter split features (vs pitcher hand) — join splits_df computed earlier
     print(f"  [season {season}] Joining batter split features...")
