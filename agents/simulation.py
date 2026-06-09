@@ -593,7 +593,7 @@ def _fetch_lineups(today: str) -> dict[str, int]:
                         pid = player.get("id")
                         slot = player.get("battingOrder")
                         if pid and slot is not None and pid in id_to_norm_name:
-                            result[id_to_norm_name[pid]] = int(slot)
+                            result[id_to_norm_name[pid]] = int(slot) // 100
         return result
     except Exception as exc:
         logger.warning("[simulation] Could not fetch lineups: %s", exc)
@@ -743,7 +743,7 @@ def _fetch_rolling_window(days: int = 30) -> tuple[dict[str, dict], dict[int, di
         if n_bbe < 5:
             continue
         bbe = grp[bbe_mask]
-        n_barrel = bbe["barrel"].fillna(0).sum() if "barrel" in bbe.columns else 0
+        n_barrel = (bbe["launch_speed_angle"] == 6).sum() if "launch_speed_angle" in bbe.columns else 0
         avg_ev = (
             float(bbe["launch_speed"].mean())
             if "launch_speed" in bbe.columns and bbe["launch_speed"].notna().any()

@@ -41,7 +41,7 @@ LEAGUE_MEAN_HR_FB = 0.138
 _STATCAST_BASE_COLS = [
     "batter", "pitcher", "game_pk", "game_date",
     "home_team", "p_throws", "stand", "events",
-    "bb_type", "bat_order", "launch_speed", "barrel",
+    "bb_type", "bat_order", "launch_speed", "launch_speed_angle",
 ]
 
 
@@ -144,8 +144,8 @@ def _fetch_batter_splits(sc: pd.DataFrame, season: int) -> pd.DataFrame:
         fb_pct = float(n_fb / n_bbe) if n_bbe > 0 else float("nan")
         hr_fb = float(n_hr / n_fb) if n_fb > 0 else float("nan")
 
-        if "barrel" in bbe.columns:
-            n_barrel = bbe["barrel"].fillna(0).sum()
+        if "launch_speed_angle" in bbe.columns:
+            n_barrel = (bbe["launch_speed_angle"] == 6).sum()
             brl_pct = float(n_barrel / n_bbe) * 100
         else:
             brl_pct = float("nan")
@@ -196,7 +196,7 @@ def _compute_per_game_contact_stats(sc: pd.DataFrame) -> pd.DataFrame:
         if n_bbe == 0:
             continue
         bbe = grp[bbe_mask]
-        n_barrel = bbe["barrel"].fillna(0).sum() if "barrel" in bbe.columns else 0
+        n_barrel = (bbe["launch_speed_angle"] == 6).sum() if "launch_speed_angle" in bbe.columns else 0
         avg_ev = (
             float(bbe["launch_speed"].mean())
             if "launch_speed" in bbe.columns and bbe["launch_speed"].notna().any()
