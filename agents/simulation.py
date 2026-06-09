@@ -941,10 +941,10 @@ def add_simulation(df: pd.DataFrame) -> pd.DataFrame:
             # Split features (vs pitcher hand)
             split_key = (norm_name, pitcher_hand) if pitcher_hand in ("L", "R") else None
             split = splits_lookup.get(split_key, {}) if split_key else {}
-            brl_pct_vs_hand = split.get("brl_pct") or stats["brl_percent"]
-            iso_vs_hand = split.get("iso") or stats["iso"]
-            fb_pct_vs_hand = split.get("fb_pct") or fg.get("fb_pct", LEAGUE_MEAN_FB_PCT)
-            hr_fb_vs_hand = split.get("hr_fb") or fg.get("hr_fb", LEAGUE_MEAN_HR_FB)
+            brl_pct_vs_hand = split["brl_pct"] if split.get("brl_pct") is not None else stats["brl_percent"]
+            iso_vs_hand     = split["iso"]     if split.get("iso")     is not None else stats["iso"]
+            fb_pct_vs_hand  = split["fb_pct"] if split.get("fb_pct") is not None else fg.get("fb_pct", LEAGUE_MEAN_FB_PCT)
+            hr_fb_vs_hand   = split["hr_fb"]  if split.get("hr_fb")  is not None else fg.get("hr_fb", LEAGUE_MEAN_HR_FB)
 
             # Rolling batter features
             batter_roll = batter_rolling.get(norm_name, {})
@@ -957,8 +957,8 @@ def add_simulation(df: pd.DataFrame) -> pd.DataFrame:
 
             # Rolling pitcher features (look up by pitcher_id stored in starters)
             opposing_starter = _get_opposing_starter_info(row, starters)
-            pitcher_id_for_rolling = opposing_starter.get("pitcher_id", 0) if opposing_starter else 0
-            pitcher_roll = pitcher_rolling_by_id.get(pitcher_id_for_rolling, {})
+            pitcher_id_for_rolling = opposing_starter.get("pitcher_id") if opposing_starter else None
+            pitcher_roll = pitcher_rolling_by_id.get(pitcher_id_for_rolling, {}) if pitcher_id_for_rolling else {}
             rolling_pitcher_hr9 = pitcher_roll.get("rolling_pitcher_hr9")
             if rolling_pitcher_hr9 is None or (isinstance(rolling_pitcher_hr9, float) and rolling_pitcher_hr9 != rolling_pitcher_hr9):
                 rolling_pitcher_hr9 = pitcher_hr9
