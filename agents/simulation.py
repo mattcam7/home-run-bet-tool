@@ -31,12 +31,8 @@ logger = logging.getLogger(__name__)
 
 BATTER_FEATURES = ["brl_percent", "avg_hit_speed", "ev95percent", "iso"]
 GAME_FEATURES = [
-    "brl_pct_vs_hand", "iso_vs_hand", "fb_pct_vs_hand", "hr_fb_vs_hand",
-    "avg_hit_speed", "ev95percent", "bat_speed",
-    "park_factor", "same_hand",
-    "rolling_brl_pct", "rolling_avg_ev",
-    "rolling_pitcher_hr9", "pitcher_gb_pct",
-    "lineup_slot",
+    "brl_percent", "avg_hit_speed", "ev95percent", "iso",
+    "bat_speed", "park_factor", "same_hand", "pitcher_hr9",
 ]
 LEAGUE_MEAN_BAT_SPEED = 68.9   # mph — 2024+ Statcast average on all swings
 LEAGUE_MEAN_FB_PCT = 0.362     # MLB average fly ball rate 2022-2025
@@ -895,10 +891,9 @@ def add_simulation(df: pd.DataFrame) -> pd.DataFrame:
         batter_dfs = {s: _fetch_batter_stats(s) for s in all_seasons}
         pitcher_dfs = {s: _fetch_pitcher_stats(s) for s in all_seasons}
 
-        # Probable starters + batter handedness + lineups (best-effort)
+        # Probable starters + batter handedness (best-effort)
         starters = _fetch_probable_starters(today)
         batter_hands = _fetch_batter_hands()
-        lineups = _fetch_lineups(today)
 
         # Park factors
         with PARK_FACTORS_PATH.open(encoding="utf-8") as f:
@@ -907,13 +902,8 @@ def add_simulation(df: pd.DataFrame) -> pd.DataFrame:
         # Model
         model = _get_or_train_model()
 
-        # Sidecars
+        # Bat speed sidecar
         bat_speed_lookup = _load_bat_speed_lookup()
-        fg_stats_lookup = _load_fg_stats_lookup()
-        splits_lookup = _load_batter_splits_lookup()
-
-        # Rolling window (best-effort, returns ({}, {}) on failure)
-        batter_rolling, pitcher_rolling_by_id = _fetch_rolling_window()
 
         sim_probs: list[float | None] = []
         for _, row in df.iterrows():
@@ -931,59 +921,17 @@ def add_simulation(df: pd.DataFrame) -> pd.DataFrame:
             same_hand = int(
                 bool(batter_hand and pitcher_hand and batter_hand != "S" and batter_hand == pitcher_hand)
             )
-
-            # bat_speed fallback
             bat_speed = bat_speed_lookup.get(norm_name, LEAGUE_MEAN_BAT_SPEED)
 
-            # fg season stats (used as split fallbacks)
-            fg = fg_stats_lookup.get(norm_name, {})
-
-            # Split features (vs pitcher hand)
-            split_key = (norm_name, pitcher_hand) if pitcher_hand in ("L", "R") else None
-            split = splits_lookup.get(split_key, {}) if split_key else {}
-            brl_pct_vs_hand = split["brl_pct"] if split.get("brl_pct") is not None else stats["brl_percent"]
-            iso_vs_hand     = split["iso"]     if split.get("iso")     is not None else stats["iso"]
-            fb_pct_vs_hand  = split["fb_pct"] if split.get("fb_pct") is not None else fg.get("fb_pct", LEAGUE_MEAN_FB_PCT)
-            hr_fb_vs_hand   = split["hr_fb"]  if split.get("hr_fb")  is not None else fg.get("hr_fb", LEAGUE_MEAN_HR_FB)
-
-            # Rolling batter features
-            batter_roll = batter_rolling.get(norm_name, {})
-            rolling_brl_pct = batter_roll.get("rolling_brl_pct")
-            if rolling_brl_pct is None or (isinstance(rolling_brl_pct, float) and rolling_brl_pct != rolling_brl_pct):
-                rolling_brl_pct = stats["brl_percent"]
-            rolling_avg_ev = batter_roll.get("rolling_avg_ev")
-            if rolling_avg_ev is None or (isinstance(rolling_avg_ev, float) and rolling_avg_ev != rolling_avg_ev):
-                rolling_avg_ev = stats["avg_hit_speed"]
-
-            # Rolling pitcher features (look up by pitcher_id stored in starters)
-            opposing_starter = _get_opposing_starter_info(row, starters)
-            pitcher_id_for_rolling = opposing_starter.get("pitcher_id") if opposing_starter else None
-            pitcher_roll = pitcher_rolling_by_id.get(pitcher_id_for_rolling, {}) if pitcher_id_for_rolling else {}
-            rolling_pitcher_hr9 = pitcher_roll.get("rolling_pitcher_hr9")
-            if rolling_pitcher_hr9 is None or (isinstance(rolling_pitcher_hr9, float) and rolling_pitcher_hr9 != rolling_pitcher_hr9):
-                rolling_pitcher_hr9 = pitcher_hr9
-            pitcher_gb_pct = pitcher_roll.get("rolling_pitcher_gb_pct")
-            if pitcher_gb_pct is None or (isinstance(pitcher_gb_pct, float) and pitcher_gb_pct != pitcher_gb_pct):
-                pitcher_gb_pct = LEAGUE_MEAN_GB_PCT
-
-            # Lineup slot
-            lineup_slot = float(lineups.get(norm_name, 4.5))
-
             features = {
-                "brl_pct_vs_hand":     float(brl_pct_vs_hand),
-                "iso_vs_hand":         float(iso_vs_hand),
-                "fb_pct_vs_hand":      float(fb_pct_vs_hand),
-                "hr_fb_vs_hand":       float(hr_fb_vs_hand),
-                "avg_hit_speed":       float(stats["avg_hit_speed"]),
-                "ev95percent":         float(stats["ev95percent"]),
-                "bat_speed":           float(bat_speed),
-                "park_factor":         float(park_factor),
-                "same_hand":           float(same_hand),
-                "rolling_brl_pct":     float(rolling_brl_pct),
-                "rolling_avg_ev":      float(rolling_avg_ev),
-                "rolling_pitcher_hr9": float(rolling_pitcher_hr9),
-                "pitcher_gb_pct":      float(pitcher_gb_pct),
-                "lineup_slot":         float(lineup_slot),
+                "brl_percent":   float(stats["brl_percent"]),
+                "avg_hit_speed": float(stats["avg_hit_speed"]),
+                "ev95percent":   float(stats["ev95percent"]),
+                "iso":           float(stats["iso"]),
+                "bat_speed":     float(bat_speed),
+                "park_factor":   float(park_factor),
+                "same_hand":     float(same_hand),
+                "pitcher_hr9":   float(pitcher_hr9),
             }
 
             sim_prob = model.predict(features)
