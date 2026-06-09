@@ -1,6 +1,6 @@
 .env
 hr_dashboard.html
-data/
+data/*
 .claude/
 __pycache__/
 *.pyc
