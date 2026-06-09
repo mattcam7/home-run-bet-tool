@@ -1,31 +1,30 @@
-# .github/workflows/daily_picks.yml
-name: Daily HR Picks
+name: Daily Picks
 
 on:
   schedule:
-    - cron: "0 15 * * *"   # 11:00 AM ET (UTC-4 during EDT)
-  workflow_dispatch:         # allow manual trigger for testing
+    - cron: '0 18 * * *'  # 2 PM ET (18:00 UTC during EDT, Apr-Oct)
+  workflow_dispatch:
 
 jobs:
-  post-picks:
+  run-pipeline:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
-          cache: "pip"
+          python-version: '3.11'
 
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Post picks to Discord
+      - name: Run pipeline
         env:
           ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
           DISCORD_PICKS_WEBHOOK: ${{ secrets.DISCORD_PICKS_WEBHOOK }}
           DISCORD_STATUS_WEBHOOK: ${{ secrets.DISCORD_STATUS_WEBHOOK }}
+          DISCORD_RESULTS_WEBHOOK: ${{ secrets.DISCORD_RESULTS_WEBHOOK }}
+          DISCORD_RECAP_WEBHOOK: ${{ secrets.DISCORD_RECAP_WEBHOOK }}
         run: python run.py --no-browser
