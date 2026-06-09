@@ -61,6 +61,8 @@ _META: frozenset[str] = frozenset({
     "pin_prob_z", "sim_prob_z",
     # Bet quality scoring columns — not book odds
     "bet_score", "bet_grade",
+    # Featured-bet flag set in run.py — not book odds
+    "featured_bet",
 })
 
 

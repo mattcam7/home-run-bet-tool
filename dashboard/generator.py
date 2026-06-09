@@ -23,6 +23,8 @@ META_COLS = {
     "pin_prob_z", "sim_prob_z",
     # WAT scoring columns — display-only, not book odds
     "bet_score", "bet_grade",
+    # Featured-bet flag set in run.py — not book odds
+    "featured_bet",
 }
 
 HTML_TEMPLATE = """<!DOCTYPE html>
