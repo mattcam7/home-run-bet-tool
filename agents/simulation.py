@@ -31,15 +31,20 @@ logger = logging.getLogger(__name__)
 
 BATTER_FEATURES = ["brl_percent", "avg_hit_speed", "ev95percent", "iso"]
 GAME_FEATURES = [
-    "brl_percent", "avg_hit_speed", "ev95percent", "iso",
-    "bat_speed", "park_factor", "same_hand", "pitcher_hr9",
-    "fb_pct", "hr_fb",
+    "brl_pct_vs_hand", "iso_vs_hand", "fb_pct_vs_hand", "hr_fb_vs_hand",
+    "avg_hit_speed", "ev95percent", "bat_speed",
+    "park_factor", "same_hand",
+    "rolling_brl_pct", "rolling_avg_ev",
+    "rolling_pitcher_hr9", "pitcher_gb_pct",
+    "lineup_slot",
 ]
 LEAGUE_MEAN_BAT_SPEED = 68.9   # mph — 2024+ Statcast average on all swings
 LEAGUE_MEAN_FB_PCT = 0.362     # MLB average fly ball rate 2022-2025
 LEAGUE_MEAN_HR_FB = 0.138      # MLB average HR/FB rate 2022-2025
 BAT_SPEED_PATH = Path("data/batter_bat_speed.parquet")
 FG_STATS_PATH = Path("data/fg_batter_stats.parquet")
+LEAGUE_MEAN_GB_PCT = 0.44
+BATTER_SPLITS_PATH = Path("data/batter_splits.parquet")
 TRAINING_CACHE_PATH = Path("data/sim_training_cache.parquet")
 MODEL_MAX_AGE_DAYS = 30
 SEASON_WEIGHTS = {2024: 0.10, 2025: 0.30, 2026: 0.60}
@@ -363,15 +368,24 @@ def _get_pitcher_stats_by_name(
 
 class HRClassifier:
     """
-    Logistic regression classifier predicting P(hit_hr=1) from 8 game-level features.
+    Logistic regression classifier predicting P(hit_hr=1) from 14 game-level features.
     Trained on binary player-game Statcast outcomes (2022-2025).
 
-    Features (GAME_FEATURES):
-        brl_percent, avg_hit_speed, ev95percent, iso  — batter season contact quality
-        bat_speed    — batter average bat speed (league mean when pre-2024)
-        park_factor  — home stadium HR factor (1.0 = neutral)
-        same_hand    — 1 if same handedness (platoon disadvantage), 0 if opposite
-        pitcher_hr9  — opposing starter's season HR/9
+    Features (GAME_FEATURES) v2:
+        brl_pct_vs_hand    — barrel % vs pitcher hand (splits sidecar, falls back to season)
+        iso_vs_hand        — ISO vs pitcher hand (splits sidecar, falls back to season)
+        fb_pct_vs_hand     — fly ball % vs pitcher hand (splits sidecar, falls back to FG)
+        hr_fb_vs_hand      — HR/FB vs pitcher hand (splits sidecar, falls back to FG)
+        avg_hit_speed      — batter season avg exit velocity
+        ev95percent        — batter season hard-hit rate (EV >= 95 mph)
+        bat_speed          — batter average bat speed (league mean when missing)
+        park_factor        — home stadium HR factor (1.0 = neutral)
+        same_hand          — 1 if same handedness (platoon disadvantage), 0 if opposite
+        rolling_brl_pct    — 30-day rolling barrel % (falls back to season)
+        rolling_avg_ev     — 30-day rolling avg exit velocity (falls back to season)
+        rolling_pitcher_hr9 — 30-day rolling pitcher HR/9 (falls back to season HR/9)
+        pitcher_gb_pct     — 30-day rolling pitcher ground ball % (falls back to league mean)
+        lineup_slot        — batting order slot 1-9 (defaults to 4.5 when not posted)
     """
 
     def __init__(self) -> None:
@@ -507,11 +521,13 @@ def _fetch_probable_starters(today: str) -> dict:
                 if pid in pitcher_ids:
                     id_to_hand[pid] = player.get("pitchHand", {}).get("code", "")
             for entry in result.values():
-                entry["hand"] = id_to_hand.get(entry.pop("_id", None) or 0, "")
+                pid = entry.pop("_id", None) or 0
+                entry["hand"] = id_to_hand.get(pid, "")
+                entry["pitcher_id"] = pid
         except Exception as hand_exc:
             logger.warning("[simulation] Could not resolve pitcher hands: %s", hand_exc)
             for entry in result.values():
-                entry.pop("_id", None)
+                entry["pitcher_id"] = entry.pop("_id", None) or 0
 
         return result
     except Exception as exc:
@@ -540,6 +556,47 @@ def _fetch_batter_hands() -> dict:
         return result
     except Exception as exc:
         logger.warning("[simulation] Could not fetch batter hands: %s", exc)
+        return {}
+
+
+def _fetch_lineups(today: str) -> dict[str, int]:
+    """
+    Returns {normalized_player_name: batting_order_slot (1-9)} for today's confirmed lineups.
+    Returns empty dict when lineups are not yet posted or on any error.
+    """
+    try:
+        resp = requests.get(
+            "https://statsapi.mlb.com/api/v1/schedule",
+            params={"sportId": 1, "date": today, "hydrate": "lineups"},
+            timeout=15,
+        )
+        resp.raise_for_status()
+
+        players_resp = requests.get(
+            "https://statsapi.mlb.com/api/v1/sports/1/players",
+            params={"season": datetime.now(timezone.utc).year, "gameType": "R"},
+            timeout=15,
+        )
+        players_resp.raise_for_status()
+        id_to_norm_name: dict[int, str] = {
+            int(p["id"]): _normalize_name(p.get("fullName", ""))
+            for p in players_resp.json().get("people", [])
+            if p.get("id") and p.get("fullName")
+        }
+
+        result: dict[str, int] = {}
+        for date_entry in resp.json().get("dates", []):
+            for game in date_entry.get("games", []):
+                lineups = game.get("lineups", {})
+                for side_key in ("homePlayers", "awayPlayers"):
+                    for player in lineups.get(side_key, []):
+                        pid = player.get("id")
+                        slot = player.get("battingOrder")
+                        if pid and slot is not None and pid in id_to_norm_name:
+                            result[id_to_norm_name[pid]] = int(slot)
+        return result
+    except Exception as exc:
+        logger.warning("[simulation] Could not fetch lineups: %s", exc)
         return {}
 
 
@@ -592,6 +649,163 @@ def _load_fg_stats_lookup() -> dict[str, dict[str, float]]:
         return {}
 
 
+def _load_batter_splits_lookup() -> dict[tuple[str, str], dict[str, float | None]]:
+    """
+    Load {(normalized_name, pitcher_hand): {brl_pct, iso, fb_pct, hr_fb}}
+    from data/batter_splits.parquet. Uses most recent season per player-hand combo.
+    Returns empty dict if file missing or malformed.
+    """
+    if not BATTER_SPLITS_PATH.exists():
+        return {}
+    try:
+        df = pd.read_parquet(BATTER_SPLITS_PATH)
+        required = {"Name", "vs_hand", "brl_pct", "iso", "fb_pct", "hr_fb"}
+        if df.empty or not required.issubset(df.columns):
+            return {}
+        latest = df.sort_values("season").groupby(["player_id", "vs_hand"]).last().reset_index()
+        result: dict[tuple[str, str], dict[str, float | None]] = {}
+        for _, r in latest.iterrows():
+            if pd.isna(r.get("Name")):
+                continue
+            key = (_normalize_name(str(r["Name"])), str(r["vs_hand"]))
+            result[key] = {
+                "brl_pct": float(r["brl_pct"]) if pd.notna(r["brl_pct"]) else None,
+                "iso": float(r["iso"]) if pd.notna(r["iso"]) else None,
+                "fb_pct": float(r["fb_pct"]) if pd.notna(r["fb_pct"]) else None,
+                "hr_fb": float(r["hr_fb"]) if pd.notna(r["hr_fb"]) else None,
+            }
+        return result
+    except Exception as exc:
+        logger.warning("[simulation] Could not load batter splits sidecar: %s", exc)
+        return {}
+
+
+def _fetch_rolling_window(days: int = 30) -> tuple[dict[str, dict], dict[int, dict]]:
+    """
+    Pull last `days` calendar days of Statcast (all players).
+    Compute per-batter rolling stats and per-pitcher rolling stats.
+    Daily-cached to data/sim_cache/rolling_{date}.parquet.
+
+    Returns:
+        batter_rolling: {normalized_name: {rolling_brl_pct, rolling_avg_ev}}
+        pitcher_rolling_by_id: {pitcher_mlbam_id: {rolling_pitcher_hr9, rolling_pitcher_gb_pct}}
+    Returns ({}, {}) on any error.
+    """
+    from datetime import timedelta
+
+    today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    cache_path = CACHE_DIR / f"rolling_{today_str}.parquet"
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+
+    if cache_path.exists():
+        try:
+            cached = pd.read_parquet(cache_path)
+            batter_rows = cached[cached["role"] == "batter"]
+            pitcher_rows = cached[cached["role"] == "pitcher"]
+            batter_rolling: dict[str, dict] = {
+                str(r["norm_name"]): {
+                    "rolling_brl_pct": r.get("rolling_brl_pct"),
+                    "rolling_avg_ev": r.get("rolling_avg_ev"),
+                }
+                for _, r in batter_rows.iterrows()
+            }
+            pitcher_rolling_by_id: dict[int, dict] = {}
+            for _, r in pitcher_rows.iterrows():
+                pid = r.get("_pitcher_id")
+                if pd.notna(pid):
+                    pitcher_rolling_by_id[int(pid)] = {
+                        "rolling_pitcher_hr9": r.get("rolling_pitcher_hr9"),
+                        "rolling_pitcher_gb_pct": r.get("rolling_pitcher_gb_pct"),
+                    }
+            return batter_rolling, pitcher_rolling_by_id
+        except Exception:
+            pass  # re-fetch on cache read failure
+
+    try:
+        import pybaseball
+        start_date = (
+            datetime.now(timezone.utc) - timedelta(days=days)
+        ).strftime("%Y-%m-%d")
+        sc = pybaseball.statcast(start_date, today_str, verbose=False)
+    except Exception as exc:
+        logger.warning("[simulation] Rolling window fetch failed: %s", exc)
+        return {}, {}
+
+    if sc is None or sc.empty:
+        return {}, {}
+
+    name_col = "player_name" if "player_name" in sc.columns else None
+
+    batter_rows_out: list[dict] = []
+    for batter_id, grp in sc.groupby("batter"):
+        bbe_mask = grp["bb_type"].notna()
+        n_bbe = bbe_mask.sum()
+        if n_bbe < 5:
+            continue
+        bbe = grp[bbe_mask]
+        n_barrel = bbe["barrel"].fillna(0).sum() if "barrel" in bbe.columns else 0
+        avg_ev = (
+            float(bbe["launch_speed"].mean())
+            if "launch_speed" in bbe.columns and bbe["launch_speed"].notna().any()
+            else float("nan")
+        )
+        name = ""
+        if name_col:
+            names = grp[name_col].dropna()
+            if len(names) > 0:
+                name = _reverse_statcast_name(str(names.iloc[0]))
+        norm = _normalize_name(name) if name else ""
+        if not norm:
+            continue
+        batter_rows_out.append({
+            "role": "batter",
+            "norm_name": norm,
+            "_pitcher_id": float("nan"),
+            "rolling_brl_pct": float(n_barrel / n_bbe) * 100 if n_bbe > 0 else float("nan"),
+            "rolling_avg_ev": avg_ev,
+            "rolling_pitcher_hr9": float("nan"),
+            "rolling_pitcher_gb_pct": float("nan"),
+        })
+
+    pitcher_rows_out: list[dict] = []
+    for pitcher_id, grp in sc.groupby("pitcher"):
+        bbe_mask = grp["bb_type"].notna()
+        n_bbe = bbe_mask.sum()
+        n_gb = (grp.loc[bbe_mask, "bb_type"] == "ground_ball").sum() if n_bbe > 0 else 0
+        n_hr = (grp["events"] == "home_run").sum()
+        n_pitches = len(grp)
+        ip_approx = n_pitches / 15.0
+        pitcher_rows_out.append({
+            "role": "pitcher",
+            "norm_name": f"_pid_{pitcher_id}",
+            "_pitcher_id": float(pitcher_id),
+            "rolling_brl_pct": float("nan"),
+            "rolling_avg_ev": float("nan"),
+            "rolling_pitcher_hr9": float(n_hr / ip_approx * 9) if ip_approx > 0 else float("nan"),
+            "rolling_pitcher_gb_pct": float(n_gb / n_bbe) if n_bbe > 0 else float("nan"),
+        })
+
+    all_rows = batter_rows_out + pitcher_rows_out
+    if all_rows:
+        pd.DataFrame(all_rows).to_parquet(cache_path, index=False)
+
+    batter_rolling = {
+        r["norm_name"]: {
+            "rolling_brl_pct": r["rolling_brl_pct"],
+            "rolling_avg_ev": r["rolling_avg_ev"],
+        }
+        for r in batter_rows_out
+    }
+    pitcher_rolling_by_id = {
+        int(r["_pitcher_id"]): {
+            "rolling_pitcher_hr9": r["rolling_pitcher_hr9"],
+            "rolling_pitcher_gb_pct": r["rolling_pitcher_gb_pct"],
+        }
+        for r in pitcher_rows_out
+    }
+    return batter_rolling, pitcher_rolling_by_id
+
+
 def _get_pitcher_info(
     row: pd.Series,
     starters: dict,
@@ -633,6 +847,24 @@ def _get_pitcher_info(
     return pitcher_name, pitcher_hand, pitcher_stats.get("HR/9", PITCHER_LEAGUE_HR9)
 
 
+def _get_opposing_starter_info(
+    row: pd.Series, starters: dict
+) -> dict | None:
+    """Return the starters entry for the opposing team, or None."""
+    game = str(row.get("game", ""))
+    batter_team = str(row.get("team", ""))
+    if " @ " not in game or not batter_team:
+        return None
+    away_name, home_name = game.split(" @ ", 1)
+    away_abbrev = TEAM_NAME_TO_ABBREV.get(away_name.strip(), "")
+    home_abbrev = TEAM_NAME_TO_ABBREV.get(home_name.strip(), "")
+    batter_team_norm = _normalize_team_abbrev(batter_team)
+    opposing_abbrev = away_abbrev if batter_team_norm == home_abbrev else (
+        home_abbrev if batter_team_norm == away_abbrev else ""
+    )
+    return starters.get(opposing_abbrev)
+
+
 # ---------------------------------------------------------------------------
 # Public interface
 # ---------------------------------------------------------------------------
@@ -658,25 +890,30 @@ def add_simulation(df: pd.DataFrame) -> pd.DataFrame:
     try:
         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
-        # Fetch all batter + pitcher stats (daily cached)
+        # Season stats (daily cached)
         all_seasons = [2024, 2025, 2026]
         batter_dfs = {s: _fetch_batter_stats(s) for s in all_seasons}
         pitcher_dfs = {s: _fetch_pitcher_stats(s) for s in all_seasons}
 
-        # Probable starters + batter handedness (best-effort)
+        # Probable starters + batter handedness + lineups (best-effort)
         starters = _fetch_probable_starters(today)
         batter_hands = _fetch_batter_hands()
+        lineups = _fetch_lineups(today)
 
         # Park factors
         with PARK_FACTORS_PATH.open(encoding="utf-8") as f:
             park_factors = json.load(f)
 
-        # Get/train model
+        # Model
         model = _get_or_train_model()
 
-        # Load batter sidecars for game-level features (best-effort, name-keyed)
-        bat_speed_lookup: dict[str, float] = _load_bat_speed_lookup()
-        fg_stats_lookup: dict[str, dict[str, float]] = _load_fg_stats_lookup()
+        # Sidecars
+        bat_speed_lookup = _load_bat_speed_lookup()
+        fg_stats_lookup = _load_fg_stats_lookup()
+        splits_lookup = _load_batter_splits_lookup()
+
+        # Rolling window (best-effort, returns ({}, {}) on failure)
+        batter_rolling, pitcher_rolling_by_id = _fetch_rolling_window()
 
         sim_probs: list[float | None] = []
         for _, row in df.iterrows():
@@ -685,34 +922,68 @@ def add_simulation(df: pd.DataFrame) -> pd.DataFrame:
                 sim_probs.append(None)
                 continue
 
+            norm_name = _normalize_name(row["player_name"])
             park_factor = _get_park_factor(row.get("game", ""), park_factors)
             _pitcher_name, pitcher_hand, pitcher_hr9 = _get_pitcher_info(
                 row, starters, pitcher_dfs
             )
-
-            norm_name = _normalize_name(row["player_name"])
             batter_hand = batter_hands.get(norm_name, "")
             same_hand = int(
                 bool(batter_hand and pitcher_hand and batter_hand != "S" and batter_hand == pitcher_hand)
             )
 
-            # bat_speed: use name-keyed lookup, fall back to league mean
+            # bat_speed fallback
             bat_speed = bat_speed_lookup.get(norm_name, LEAGUE_MEAN_BAT_SPEED)
 
-            # fg_stats: fb_pct and hr_fb, fall back to league means
+            # fg season stats (used as split fallbacks)
             fg = fg_stats_lookup.get(norm_name, {})
-            fb_pct = fg.get("fb_pct", LEAGUE_MEAN_FB_PCT)
-            hr_fb  = fg.get("hr_fb",  LEAGUE_MEAN_HR_FB)
 
-            # Assemble full 10-feature dict for HRClassifier
+            # Split features (vs pitcher hand)
+            split_key = (norm_name, pitcher_hand) if pitcher_hand in ("L", "R") else None
+            split = splits_lookup.get(split_key, {}) if split_key else {}
+            brl_pct_vs_hand = split.get("brl_pct") or stats["brl_percent"]
+            iso_vs_hand = split.get("iso") or stats["iso"]
+            fb_pct_vs_hand = split.get("fb_pct") or fg.get("fb_pct", LEAGUE_MEAN_FB_PCT)
+            hr_fb_vs_hand = split.get("hr_fb") or fg.get("hr_fb", LEAGUE_MEAN_HR_FB)
+
+            # Rolling batter features
+            batter_roll = batter_rolling.get(norm_name, {})
+            rolling_brl_pct = batter_roll.get("rolling_brl_pct")
+            if rolling_brl_pct is None or (isinstance(rolling_brl_pct, float) and rolling_brl_pct != rolling_brl_pct):
+                rolling_brl_pct = stats["brl_percent"]
+            rolling_avg_ev = batter_roll.get("rolling_avg_ev")
+            if rolling_avg_ev is None or (isinstance(rolling_avg_ev, float) and rolling_avg_ev != rolling_avg_ev):
+                rolling_avg_ev = stats["avg_hit_speed"]
+
+            # Rolling pitcher features (look up by pitcher_id stored in starters)
+            opposing_starter = _get_opposing_starter_info(row, starters)
+            pitcher_id_for_rolling = opposing_starter.get("pitcher_id", 0) if opposing_starter else 0
+            pitcher_roll = pitcher_rolling_by_id.get(pitcher_id_for_rolling, {})
+            rolling_pitcher_hr9 = pitcher_roll.get("rolling_pitcher_hr9")
+            if rolling_pitcher_hr9 is None or (isinstance(rolling_pitcher_hr9, float) and rolling_pitcher_hr9 != rolling_pitcher_hr9):
+                rolling_pitcher_hr9 = pitcher_hr9
+            pitcher_gb_pct = pitcher_roll.get("rolling_pitcher_gb_pct")
+            if pitcher_gb_pct is None or (isinstance(pitcher_gb_pct, float) and pitcher_gb_pct != pitcher_gb_pct):
+                pitcher_gb_pct = LEAGUE_MEAN_GB_PCT
+
+            # Lineup slot
+            lineup_slot = float(lineups.get(norm_name, 4.5))
+
             features = {
-                **stats,  # brl_percent, avg_hit_speed, ev95percent, iso
-                "bat_speed":   bat_speed,
-                "park_factor": park_factor,
-                "same_hand":   float(same_hand),
-                "pitcher_hr9": pitcher_hr9,
-                "fb_pct":      fb_pct,
-                "hr_fb":       hr_fb,
+                "brl_pct_vs_hand":     float(brl_pct_vs_hand),
+                "iso_vs_hand":         float(iso_vs_hand),
+                "fb_pct_vs_hand":      float(fb_pct_vs_hand),
+                "hr_fb_vs_hand":       float(hr_fb_vs_hand),
+                "avg_hit_speed":       float(stats["avg_hit_speed"]),
+                "ev95percent":         float(stats["ev95percent"]),
+                "bat_speed":           float(bat_speed),
+                "park_factor":         float(park_factor),
+                "same_hand":           float(same_hand),
+                "rolling_brl_pct":     float(rolling_brl_pct),
+                "rolling_avg_ev":      float(rolling_avg_ev),
+                "rolling_pitcher_hr9": float(rolling_pitcher_hr9),
+                "pitcher_gb_pct":      float(pitcher_gb_pct),
+                "lineup_slot":         float(lineup_slot),
             }
 
             sim_prob = model.predict(features)
