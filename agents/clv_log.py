@@ -37,6 +37,7 @@ OPEN_COLS = [
     "pinnacle_over_odds", "pinnacle_prob_devig", "ev_pct",
     "kelly_units", "stake_usd",
     "anchor_quality",  # "pinnacle" | "pinnacle_over_only" | "betonlineag" | "unknown"
+    "sim_prob",        # simulation model P(HR today) — None when unavailable
     "featured_bet",
 ]
 CLOSING_COLS = [
@@ -80,6 +81,7 @@ def log_open_plays(final_df: pd.DataFrame, path: str = DEFAULT_PATH, now=None) -
             "kelly_units": float(r["kelly_units"]),
             "stake_usd": float(r["stake_usd"]),
             "anchor_quality": str(r.get("anchor_quality", "unknown")),
+            "sim_prob": float(r["sim_prob"]) if pd.notna(r.get("sim_prob")) else None,
             "featured_bet": featured,
         })
     new_idx = pd.DataFrame(rows, columns=COLUMNS).set_index(KEY)

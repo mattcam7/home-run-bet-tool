@@ -11,7 +11,7 @@ from agents.odds_scraper import extract_retail_odds
 from agents.parlay import format_parlays, generate_parlays
 from agents.pinnacle_scraper import extract_sharp_anchor
 from agents.scoring import compute_bet_score
-from agents.simulation import add_simulation
+from agents.simulation import add_simulation, validate_simulation
 from agents.validation import StepResult, append_quarantine, validate_ev_output
 from dashboard.generator import generate_dashboard
 
@@ -49,19 +49,41 @@ def fetch_event_odds(api_key: str, event_id: str) -> dict:
     std_data = std_resp.json()
     alt_data = alt_resp.json()
 
-    # Merge: standard books take priority; add alternate books not already present.
-    # Normalize alternate market key so scrapers treat it identically.
-    std_book_keys = {bk["key"] for bk in std_data.get("bookmakers", [])}
-    merged = list(std_data.get("bookmakers", []))
+    # Merge alternate into standard, book by book.
+    # Books only in alternate: rename market key and append.
+    # Books in both: merge alternate outcomes into the standard batter_home_runs
+    # market so players exclusive to the alternate market aren't dropped.
+    std_bk_by_key = {bk["key"]: bk for bk in std_data.get("bookmakers", [])}
     for bk in alt_data.get("bookmakers", []):
-        if bk["key"] in std_book_keys:
-            continue
+        alt_outcomes = []
         for market in bk["markets"]:
             if market["key"] == "batter_home_runs_alternate":
-                market["key"] = "batter_home_runs"
-        merged.append(bk)
+                alt_outcomes = market["outcomes"]
+                break
+        if not alt_outcomes:
+            continue
 
-    std_data["bookmakers"] = merged
+        if bk["key"] in std_bk_by_key:
+            # Book exists in standard data — merge in any players missing there.
+            std_bk = std_bk_by_key[bk["key"]]
+            std_market = next(
+                (m for m in std_bk["markets"] if m["key"] == "batter_home_runs"),
+                None,
+            )
+            if std_market is None:
+                std_bk["markets"].append({"key": "batter_home_runs", "outcomes": alt_outcomes})
+            else:
+                existing_players = {o.get("description", "").strip().lower() for o in std_market["outcomes"]}
+                for outcome in alt_outcomes:
+                    if outcome.get("description", "").strip().lower() not in existing_players:
+                        std_market["outcomes"].append(outcome)
+        else:
+            # Book only in alternate — rename key and add wholesale.
+            std_data.setdefault("bookmakers", []).append({
+                **bk,
+                "markets": [{"key": "batter_home_runs", "outcomes": alt_outcomes}],
+            })
+
     return std_data
 
 
@@ -166,11 +188,14 @@ def main() -> None:
         print(f"  [validation] {w}")
     final_df = ev_result.clean
 
-    # Compute bet quality score (0-100)
-    final_df = compute_bet_score(final_df)
-
     print("Running simulation model...")
     final_df = add_simulation(final_df)
+    for w in validate_simulation(final_df):
+        print(f"  {w}")
+
+    # Compute bet quality score (0-100) — must run after simulation so sim_prob
+    # is available for the divergence dampener in compute_bet_score.
+    final_df = compute_bet_score(final_df)
 
     n_players = len(final_df)
     n_positive = int((final_df["ev_pct"] > 0).sum())

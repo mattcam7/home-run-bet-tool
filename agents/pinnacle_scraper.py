@@ -26,7 +26,12 @@ def _extract_book_devig(
         anchors (BetOnline) where an Over-only price is a one-sided
         novelty line with no reliable sharp probability signal.
         Pinnacle (primary anchor) uses False so a rare Over-only entry
-        is still surfaced rather than silently dropped.
+        is still surfaced, but it is tagged over_only=True so downstream
+        callers can apply appropriate guards.
+
+    Each returned dict includes ``over_only: bool``.  When True, the
+    ``pinnacle_prob`` is vig-inclusive (no Under to strip against) and
+    must not be used as an EV anchor for high-odds retail props.
 
     Returns a list of dicts (not a DataFrame) so callers can merge before
     constructing the frame.
@@ -60,22 +65,26 @@ def _extract_book_devig(
                     if "Under" in prices:
                         under_imp = 1 / american_to_decimal(prices["Under"])
                         true_prob = over_imp / (over_imp + under_imp)
+                        over_only = False
                     else:
                         if require_under:
                             # One-sided line — no reliable de-vig possible.
                             # Skip rather than inflating the probability with
                             # the vig-inclusive implied odds.
                             continue
-                        # No Under posted — cannot strip vig. Fall back to the
-                        # vig-inclusive implied prob (plausibility guard) so the
-                        # player is still surfaced rather than silently dropped.
+                        # No Under posted — cannot strip vig. Fall back to
+                        # vig-inclusive implied prob. Tag over_only=True so
+                        # ev_calculator can apply a max-odds guard and prevent
+                        # false +EV from alternate-market/longshot retail props.
                         true_prob = over_imp
+                        over_only = True
                     rows.append({
                         "player_name": player,
                         "game": game,
                         "commence_time": commence_time,
                         "pinnacle_odds": prices["Over"],
                         "pinnacle_prob": true_prob,
+                        "over_only": over_only,
                     })
     return rows
 

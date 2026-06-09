@@ -33,9 +33,13 @@ BATTER_FEATURES = ["brl_percent", "avg_hit_speed", "ev95percent", "iso"]
 GAME_FEATURES = [
     "brl_percent", "avg_hit_speed", "ev95percent", "iso",
     "bat_speed", "park_factor", "same_hand", "pitcher_hr9",
+    "fb_pct", "hr_fb",
 ]
 LEAGUE_MEAN_BAT_SPEED = 68.9   # mph — 2024+ Statcast average on all swings
+LEAGUE_MEAN_FB_PCT = 0.362     # MLB average fly ball rate 2022-2025
+LEAGUE_MEAN_HR_FB = 0.138      # MLB average HR/FB rate 2022-2025
 BAT_SPEED_PATH = Path("data/batter_bat_speed.parquet")
+FG_STATS_PATH = Path("data/fg_batter_stats.parquet")
 TRAINING_CACHE_PATH = Path("data/sim_training_cache.parquet")
 MODEL_MAX_AGE_DAYS = 30
 SEASON_WEIGHTS = {2024: 0.10, 2025: 0.30, 2026: 0.60}
@@ -562,6 +566,32 @@ def _load_bat_speed_lookup() -> dict[str, float]:
         return {}
 
 
+def _load_fg_stats_lookup() -> dict[str, dict[str, float]]:
+    """
+    Load {normalized_player_name: {fb_pct, hr_fb}} from data/fg_batter_stats.parquet.
+    Uses most recent season per player. Returns empty dict if file missing.
+    """
+    if not FG_STATS_PATH.exists():
+        return {}
+    try:
+        fg = pd.read_parquet(FG_STATS_PATH)
+        required = {"Name", "fb_pct", "hr_fb", "season", "player_id"}
+        if fg.empty or not required.issubset(fg.columns):
+            return {}
+        latest = fg.sort_values("season").groupby("player_id").last().reset_index()
+        result = {}
+        for _, r in latest.iterrows():
+            if pd.notna(r["Name"]) and pd.notna(r["fb_pct"]) and pd.notna(r["hr_fb"]):
+                result[_normalize_name(str(r["Name"]))] = {
+                    "fb_pct": float(r["fb_pct"]),
+                    "hr_fb": float(r["hr_fb"]),
+                }
+        return result
+    except Exception as exc:
+        logger.warning("[simulation] Could not load FanGraphs stats sidecar: %s", exc)
+        return {}
+
+
 def _get_pitcher_info(
     row: pd.Series,
     starters: dict,
@@ -644,8 +674,9 @@ def add_simulation(df: pd.DataFrame) -> pd.DataFrame:
         # Get/train model
         model = _get_or_train_model()
 
-        # Load batter bat speeds for the game-level feature (best-effort, name-keyed)
+        # Load batter sidecars for game-level features (best-effort, name-keyed)
         bat_speed_lookup: dict[str, float] = _load_bat_speed_lookup()
+        fg_stats_lookup: dict[str, dict[str, float]] = _load_fg_stats_lookup()
 
         sim_probs: list[float | None] = []
         for _, row in df.iterrows():
@@ -668,13 +699,20 @@ def add_simulation(df: pd.DataFrame) -> pd.DataFrame:
             # bat_speed: use name-keyed lookup, fall back to league mean
             bat_speed = bat_speed_lookup.get(norm_name, LEAGUE_MEAN_BAT_SPEED)
 
-            # Assemble full 8-feature dict for HRClassifier
+            # fg_stats: fb_pct and hr_fb, fall back to league means
+            fg = fg_stats_lookup.get(norm_name, {})
+            fb_pct = fg.get("fb_pct", LEAGUE_MEAN_FB_PCT)
+            hr_fb  = fg.get("hr_fb",  LEAGUE_MEAN_HR_FB)
+
+            # Assemble full 10-feature dict for HRClassifier
             features = {
                 **stats,  # brl_percent, avg_hit_speed, ev95percent, iso
-                "bat_speed": bat_speed,
+                "bat_speed":   bat_speed,
                 "park_factor": park_factor,
-                "same_hand": float(same_hand),
+                "same_hand":   float(same_hand),
                 "pitcher_hr9": pitcher_hr9,
+                "fb_pct":      fb_pct,
+                "hr_fb":       hr_fb,
             }
 
             sim_prob = model.predict(features)

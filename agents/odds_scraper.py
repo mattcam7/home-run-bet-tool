@@ -2,7 +2,15 @@ import pandas as pd
 from datetime import datetime
 from agents.utils import american_to_decimal
 
-RETAIL_BOOKS = {"draftkings", "betmgm", "fanduel", "williamhill_us", "fanatics"}
+# Books confirmed present in OddsAPI for this subscription (checked 2026-06-03).
+# draftkings and betmgm are NOT in OddsAPI's coverage — kept here as no-ops so
+# they auto-appear if OddsAPI adds them later.
+RETAIL_BOOKS = {
+    "draftkings", "betmgm",           # not currently available via OddsAPI
+    "fanduel", "fanatics",             # alternate market
+    "williamhill_us",                  # Caesars — standard market
+    "betrivers",                       # standard market
+}
 
 def extract_retail_odds(raw_payload: list, now: datetime) -> pd.DataFrame:
     rows = []

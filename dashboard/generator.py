@@ -256,7 +256,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
           <td>${fmtPct(r.ev_pct)}</td>
           <td>${r.stake}</td>
           <td>${fmtZ(r.composite_z)}</td>
-          ${(()=>{const gradeColors={'Strong':'#28a745','Solid':'#17a2b8','Marginal':'#ffc107','Skip':'#6c757d'};const g=r.bet_grade||'';const c=gradeColors[g]||'#6c757d';const s=r.bet_score!=null?r.bet_score:'--';return`<td style="font-weight:700;color:${c}">${s}</td><td style="color:${c}">${g||'--'}</td>`;})()}
+          ${(()=>{const gradeColors={'Strong':'#28a745','Solid':'#17a2b8','Marginal':'#ffc107','Skip':'#6c757d'};const g=r.bet_grade||'';const isStrongRow=r.composite_z>=1.5;const c=isStrongRow?'#fff':(gradeColors[g]||'#6c757d');const s=r.bet_score!=null?r.bet_score:'--';return`<td style="font-weight:700;color:${c}">${s}</td><td style="color:${c}">${g||'--'}</td>`;})()}
         </tr>`).join('');
     }
 

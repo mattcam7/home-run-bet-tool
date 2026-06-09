@@ -220,6 +220,7 @@ class TestAddSimulation:
         monkeypatch.setattr(sim_mod, "_fetch_probable_starters", lambda today: {})
         monkeypatch.setattr(sim_mod, "_fetch_batter_hands", lambda: {})
         monkeypatch.setattr(sim_mod, "_load_bat_speed_lookup", lambda: {"Aaron Judge": 74.2})
+        monkeypatch.setattr(sim_mod, "_load_fg_stats_lookup", lambda: {"Aaron Judge": {"fb_pct": 0.43, "hr_fb": 0.30}})
 
         # Pre-train a classifier so add_simulation doesn't need the parquet cache
         clf = HRClassifier()
@@ -311,7 +312,7 @@ from agents.simulation import HRClassifier, GAME_FEATURES
 
 
 def _make_game_training_df(n: int = 300) -> pd.DataFrame:
-    """Synthetic game-level data: 8 features + binary hit_hr label."""
+    """Synthetic game-level data: 10 features + binary hit_hr label."""
     rng = np.random.default_rng(42)
     brl = rng.uniform(4, 18, n)
     ev = rng.uniform(85, 95, n)
@@ -321,6 +322,8 @@ def _make_game_training_df(n: int = 300) -> pd.DataFrame:
     park_factor = rng.uniform(0.85, 1.20, n)
     same_hand = rng.integers(0, 2, n).astype(float)
     pitcher_hr9 = rng.uniform(0.8, 2.0, n)
+    fb_pct = rng.uniform(0.25, 0.50, n)
+    hr_fb = rng.uniform(0.05, 0.30, n)
     logit = (
         -3.5
         + 0.06 * brl
@@ -329,6 +332,8 @@ def _make_game_training_df(n: int = 300) -> pd.DataFrame:
         + 1.5 * (park_factor - 1.0)
         + 0.4 * (pitcher_hr9 - 1.30)
         - 0.15 * same_hand
+        + 2.0 * hr_fb
+        + 0.5 * fb_pct
     )
     prob = 1.0 / (1.0 + np.exp(-logit))
     hit_hr = rng.binomial(1, prob).astype(float)
@@ -341,6 +346,8 @@ def _make_game_training_df(n: int = 300) -> pd.DataFrame:
         "park_factor": park_factor,
         "same_hand": same_hand,
         "pitcher_hr9": pitcher_hr9,
+        "fb_pct": fb_pct,
+        "hr_fb": hr_fb,
         "hit_hr": hit_hr,
     })
 
@@ -352,7 +359,7 @@ class TestHRClassifier:
         features = {
             "brl_percent": 10.0, "avg_hit_speed": 90.0, "ev95percent": 44.0,
             "iso": 0.22, "bat_speed": 69.5, "park_factor": 1.0,
-            "same_hand": 0, "pitcher_hr9": 1.30,
+            "same_hand": 0, "pitcher_hr9": 1.30, "fb_pct": 0.36, "hr_fb": 0.14,
         }
         result = model.predict(features)
         assert isinstance(result, float)
@@ -363,7 +370,8 @@ class TestHRClassifier:
         model.fit(_make_game_training_df(500))
         base = {
             "avg_hit_speed": 90.0, "ev95percent": 44.0, "iso": 0.22,
-            "bat_speed": 69.5, "park_factor": 1.0, "same_hand": 0, "pitcher_hr9": 1.30,
+            "bat_speed": 69.5, "park_factor": 1.0, "same_hand": 0,
+            "pitcher_hr9": 1.30, "fb_pct": 0.36, "hr_fb": 0.14,
         }
         low = model.predict({**base, "brl_percent": 4.0})
         high = model.predict({**base, "brl_percent": 18.0})
@@ -374,7 +382,8 @@ class TestHRClassifier:
         model.fit(_make_game_training_df(500))
         base = {
             "brl_percent": 10.0, "avg_hit_speed": 90.0, "ev95percent": 44.0,
-            "iso": 0.22, "bat_speed": 69.5, "same_hand": 0, "pitcher_hr9": 1.30,
+            "iso": 0.22, "bat_speed": 69.5, "same_hand": 0,
+            "pitcher_hr9": 1.30, "fb_pct": 0.36, "hr_fb": 0.14,
         }
         neutral = model.predict({**base, "park_factor": 1.0})
         coors = model.predict({**base, "park_factor": 1.20})
@@ -390,7 +399,7 @@ class TestHRClassifier:
         features = {
             "brl_percent": 10.0, "avg_hit_speed": 90.0, "ev95percent": 44.0,
             "iso": 0.22, "bat_speed": 69.5, "park_factor": 1.0,
-            "same_hand": 0, "pitcher_hr9": 1.30,
+            "same_hand": 0, "pitcher_hr9": 1.30, "fb_pct": 0.36, "hr_fb": 0.14,
         }
         assert abs(model.predict(features) - model2.predict(features)) < 1e-9
 
@@ -400,15 +409,17 @@ class TestHRClassifier:
             model.predict({
                 "brl_percent": 10.0, "avg_hit_speed": 90.0, "ev95percent": 42.0,
                 "iso": 0.2, "bat_speed": 69.5, "park_factor": 1.0,
-                "same_hand": 0, "pitcher_hr9": 1.30,
+                "same_hand": 0, "pitcher_hr9": 1.30, "fb_pct": 0.36, "hr_fb": 0.14,
             })
 
-    def test_game_features_has_eight_entries(self):
-        assert len(GAME_FEATURES) == 8
+    def test_game_features_has_ten_entries(self):
+        assert len(GAME_FEATURES) == 10
         assert "bat_speed" in GAME_FEATURES
         assert "park_factor" in GAME_FEATURES
         assert "same_hand" in GAME_FEATURES
         assert "pitcher_hr9" in GAME_FEATURES
+        assert "fb_pct" in GAME_FEATURES
+        assert "hr_fb" in GAME_FEATURES
 
 
 class TestGetOrTrainModel:
@@ -425,7 +436,7 @@ class TestGetOrTrainModel:
         prob = result.predict({
             "brl_percent": 10.0, "avg_hit_speed": 90.0, "ev95percent": 44.0,
             "iso": 0.22, "bat_speed": 69.5, "park_factor": 1.0,
-            "same_hand": 0, "pitcher_hr9": 1.30,
+            "same_hand": 0, "pitcher_hr9": 1.30, "fb_pct": 0.36, "hr_fb": 0.14,
         })
         assert 0.0 < prob < 1.0
 

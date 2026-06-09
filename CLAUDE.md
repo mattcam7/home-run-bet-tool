@@ -64,22 +64,39 @@ Before proposing any model fix, validate the hypothesis against actual data firs
 
 Typing `run the hr dashboard` in this Claude Code chat session triggers execution of `python run.py` from the repo root. This fetches today's MLB HR prop odds, computes EV vs Pinnacle's lines, and opens the interactive HTML dashboard in the default browser.
 
-## Insights Suggestions 5/22 
+## Sports Analytics Context
 
-Add under a ## Domain Rules or ## Betting vs DFS section in CLAUDE.md\n\nDistinguish betting EV from DFS GPP value: a player can be a bad bet (-EV) but a great DFS play (high GPP leverage), and vice versa. Never conflate the two when giving recommendations.
-
-Add under a ## Scheduling / Automation section in CLAUDE.md\n\nFor Windows scheduled tasks, never use 'schtasks /SC MINUTE' alone (one-shot trigger); use /SC MINUTE with /MO and verify recurrence, or prefer a robust scheduler. Always validate the task actually recurs before relying on it.
-
-Add near the top under ## Project Overview and a ## Validation subsection\n\nThis is a Python sports analytics codebase (golf DFS, home run betting, NHL props). Always run model validation and suspend/flag bad markets after changing pricing or props logic.
-
-## Insights Suggestions 5/30
-
-Add a new top-level section '## Sports Analytics Context' near the top of CLAUDE.md so it's loaded as project context for every session.\n\n## Sports Analytics Context
 - DFS (GPP/cash) value is DISTINCT from betting EV/CLV. Never conflate them: a player can be a fade for outright bets but a strong DFS play due to ownership leverage, salary, and ceiling.
 - For betting tools: always track CLV (closing line value) and validate model outputs before recommending bets; auto-suspend markets that fail sanity checks.
 - For DFS tools: surface cut%, leverage score, ownership projection, and salary value alongside raw projections.
 
-Add under a new '## Windows Task Scheduling' section, since PowerShell is in the top tools and scheduling is recurring.\n\n## Windows Task Scheduling
+## Betting vs DFS
+
+Distinguish betting EV from DFS GPP value: a player can be a bad bet (-EV) but a great DFS play (high GPP leverage), and vice versa. Never conflate the two when giving recommendations.
+
+## Data Quality & Pipeline Validation
+
+Correct data is more important than any model improvement. A bad data pipeline silently corrupts every downstream metric — ROI, CLV, EV — and produces false signals that are worse than having no data at all.
+
+**Anchor market mismatch is a first-class bug.** In the HR pipeline, `batter_home_runs_alternate` retail props (DraftKings/FanDuel) cover different events than Pinnacle's standard `batter_home_runs` line (e.g., "HR vs RHP only", "HR in first 5 innings"). Comparing alternate-market retail odds to a standard-market Pinnacle anchor produces false +EV and bad Kelly sizing. Always verify the anchor and retail book are pricing the same market before computing EV.
+
+**Before trusting any model output, run a distribution sanity check:**
+- Play count per date: flag any date with >2× the rolling average (signals alternate market contamination or a scraping bug)
+- Odds distribution: if >30% of a slate's plays are above +600, inspect for alternate market leakage
+- EV rate: if >80% of plays show +EV on a given date, the anchor is likely wrong or mismatched
+
+**Pipeline validation rules:**
+- After any change to odds scraping, EV calculation, or market selection logic: run the pipeline, inspect the raw play count and odds histogram before shipping
+- After any change affecting which plays enter the CLV log: backfill and diff the ROI summary against the prior baseline
+- When adding a new data source or market type: write a validation step that confirms the anchor and retail book are covering the same event before that source goes live
+- Never trust aggregated metrics (ROI, CLV%, hit rate) without first validating the underlying play-level data is clean
+
+**Alternate market guard (required for HR pipeline):**
+- Any HR prop priced above +600 at retail where Pinnacle does not have a direct line for that player must be excluded or flagged
+- Log excluded plays to a separate file so they can be reviewed, not silently dropped
+
+## Windows Task Scheduling
+
 - Do NOT use `schtasks /SC MINUTE` as a one-shot — verify recurrence with `schtasks /Query /TN <name> /V /FO LIST` after creating any scheduled task.
 - Prefer creating tasks via XML definition or PowerShell `Register-ScheduledTask` with explicit trigger repetition intervals.
 - After scheduling, always confirm the next 2-3 run times are populated before considering the task 'done'.

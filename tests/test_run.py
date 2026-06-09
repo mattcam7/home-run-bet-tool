@@ -6,7 +6,8 @@ from run import fetch_event_odds, fetch_odds, main
 
 def test_fetch_event_odds_merges_standard_and_alternate(monkeypatch):
     std_bk = {"key": "pinnacle", "title": "Pinnacle", "markets": [{"key": "batter_home_runs", "outcomes": []}]}
-    alt_bk = {"key": "draftkings", "title": "DraftKings", "markets": [{"key": "batter_home_runs_alternate", "outcomes": []}]}
+    alt_bk = {"key": "draftkings", "title": "DraftKings", "markets": [{"key": "batter_home_runs_alternate",
+               "outcomes": [{"name": "Over", "description": "Player X", "price": 300, "point": 0.5}]}]}
 
     mock_std = MagicMock()
     mock_std.raise_for_status = lambda: None
@@ -46,6 +47,48 @@ def test_fetch_event_odds_deduplicates_books(monkeypatch):
     monkeypatch.setattr("requests.get", lambda url, params, timeout: mock_std if params.get("markets") == "batter_home_runs" else mock_alt)
     result = fetch_event_odds("test_key", "ev1")
     assert len(result["bookmakers"]) == 1  # deduped, not doubled
+
+
+def test_fetch_event_odds_merges_alternate_players_for_existing_book(monkeypatch):
+    """A book present in both standard and alternate should have ALL players merged.
+
+    BetMGM (and others) post some HR props under batter_home_runs and the rest
+    under batter_home_runs_alternate.  The old code dropped the alternate players
+    for any book already seen in the standard response.
+    """
+    std_outcome = {"name": "Over", "description": "Player A", "price": -130, "point": 0.5}
+    alt_outcome_dup = {"name": "Over", "description": "Player A", "price": -125, "point": 0.5}
+    alt_outcome_new = {"name": "Over", "description": "Player B", "price": 200, "point": 0.5}
+
+    std_bk = {"key": "betmgm", "title": "BetMGM",
+               "markets": [{"key": "batter_home_runs", "outcomes": [std_outcome]}]}
+    alt_bk = {"key": "betmgm", "title": "BetMGM",
+               "markets": [{"key": "batter_home_runs_alternate",
+                             "outcomes": [alt_outcome_dup, alt_outcome_new]}]}
+
+    mock_std = MagicMock()
+    mock_std.raise_for_status = lambda: None
+    mock_std.json.return_value = {"id": "ev1", "bookmakers": [std_bk]}
+
+    mock_alt = MagicMock()
+    mock_alt.raise_for_status = lambda: None
+    mock_alt.json.return_value = {"id": "ev1", "bookmakers": [alt_bk]}
+
+    monkeypatch.setattr(
+        "requests.get",
+        lambda url, params, timeout: mock_std if params.get("markets") == "batter_home_runs" else mock_alt,
+    )
+    result = fetch_event_odds("test_key", "ev1")
+
+    book_keys = {bk["key"] for bk in result["bookmakers"]}
+    assert book_keys == {"betmgm"}, "should still be exactly one betmgm entry"
+
+    betmgm = next(bk for bk in result["bookmakers"] if bk["key"] == "betmgm")
+    hr_market = next(m for m in betmgm["markets"] if m["key"] == "batter_home_runs")
+    descriptions = {o["description"] for o in hr_market["outcomes"]}
+    assert "Player A" in descriptions, "standard player must be present"
+    assert "Player B" in descriptions, "alternate-only player must be merged in"
+    assert len(hr_market["outcomes"]) == 2, "duplicate Player A must not be added twice"
 
 
 def test_fetch_odds_skips_started_games(monkeypatch):

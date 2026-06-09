@@ -132,6 +132,50 @@ def format_report(df: pd.DataFrame) -> str:
     return "\n".join(L)
 
 
+def format_roi_report() -> str:
+    """Append ROI summary from outcome_tracker if DB exists."""
+    from agents.outcome_tracker import compute_roi_metrics
+    from pathlib import Path
+
+    m = compute_roi_metrics()
+    if not m["has_outcomes"]:
+        return "\n[Outcome DB not found — run: python -m agents.outcome_tracker --backfill]"
+
+    lines = [
+        "",
+        "=" * 56,
+        "ACTUAL OUTCOME RESULTS (MLB box scores)",
+        "=" * 56,
+        f"Settled picks : {m['n_with_outcome']}  (scratched/no AB: {m['n_scratched']})",
+        f"HR hit rate   : {m['hit_rate']*100:.1f}%  ({m['n_hr_hits']} HRs)",
+        f"Total staked  : ${m['total_staked']:,.0f}",
+        f"Total P&L     : ${m['total_pnl']:+,.2f}",
+    ]
+    if m["roi"] is not None:
+        lines.append(f"ROI           : {m['roi']*100:+.2f}%")
+
+    pev = m["positive_ev"]
+    nev = m["negative_ev"]
+
+    def _outcome_line(seg, label):
+        if not seg["n"]:
+            return f"  {label}  none"
+        roi_str = f"ROI={seg['roi']*100:+.2f}%" if seg["roi"] is not None else "ROI=N/A (no stake)"
+        hr_str = f"hit%={seg['hit_rate']*100:.1f}%" if seg["hit_rate"] is not None else "hit%=N/A"
+        return f"  {label}  n={seg['n']:<4}  {hr_str}  {roi_str}  P&L=${seg['total_pnl']:+,.0f}"
+
+    lines += [
+        "",
+        "By EV selection:",
+        _outcome_line(pev, "+EV picks   "),
+        _outcome_line(nev, "non-+EV     "),
+    ]
+    if m.get("clv_outcome_correlation") is not None:
+        lines.append(f"\nCLV<->outcome correlation: {m['clv_outcome_correlation']:+.3f}")
+    lines.append("=" * 56)
+    return "\n".join(lines)
+
+
 def main(path: str = DEFAULT_PATH) -> None:
     import os
 
@@ -139,6 +183,7 @@ def main(path: str = DEFAULT_PATH) -> None:
         print(f"No CLV log at {path} — run Phase 1 (run.py) first.")
         return
     print(format_report(pd.read_csv(path)))
+    print(format_roi_report())
 
 
 if __name__ == "__main__":

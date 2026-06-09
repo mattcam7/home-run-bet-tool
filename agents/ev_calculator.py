@@ -1,3 +1,8 @@
+import csv
+import os
+from datetime import datetime
+from pathlib import Path
+
 import pandas as pd
 from agents.utils import american_to_decimal
 
@@ -8,6 +13,34 @@ from agents.utils import american_to_decimal
 # Pinnacle posted Over-only lines at +600-900 while retail had +1000-3400 via
 # alternate-market inclusion, generating 250%+ fabricated "edge".
 _OVER_ONLY_MAX_RETAIL_ODDS = 600
+
+# BetOnline-anchored plays: retail odds above this threshold signal probable
+# alternate-market contamination. Retail books post batter_home_runs_alternate
+# (HR vs RHP, first 5 innings, etc.) which get merged into the standard market
+# feed. BOL anchors the standard market only. Any BOL-anchored play where retail
+# is above +600 cannot be trusted as same-market comparison.
+_BOL_MAX_RETAIL_ODDS = 600
+_BOL_EXCLUDED_LOG = Path("data/ev_excluded_bol.log")
+
+
+def _log_bol_excluded(rows: pd.DataFrame) -> None:
+    """Append excluded BOL-anchor plays to the review log. Never silently drop."""
+    _BOL_EXCLUDED_LOG.parent.mkdir(parents=True, exist_ok=True)
+    write_header = not _BOL_EXCLUDED_LOG.exists()
+    with open(_BOL_EXCLUDED_LOG, "a", newline="") as f:
+        writer = csv.writer(f)
+        if write_header:
+            writer.writerow(["timestamp", "player_name", "game", "bol_anchor_odds", "best_retail_odds", "best_retail_book"])
+        ts = datetime.now().isoformat(timespec="seconds")
+        for _, r in rows.iterrows():
+            writer.writerow([
+                ts,
+                r.get("player_name", ""),
+                r.get("game", ""),
+                r.get("pinnacle_odds", ""),
+                r.get("best_retail_odds", ""),
+                r.get("best_retail_book", ""),
+            ])
 
 
 def validate_slate(df: pd.DataFrame, label: str = "") -> None:
@@ -174,6 +207,25 @@ def calculate_ev(retail_df: pd.DataFrame, pinnacle_df: pd.DataFrame) -> pd.DataF
     quarter_units = (f_star / 4).clip(lower=0) * 100
     merged["kelly_units"] = ((quarter_units * 2).round() / 2).clip(upper=3.0)
     merged["stake_usd"] = merged["kelly_units"] * 25
+
+    # BOL-anchor alternate market guard: BetOnline anchors the standard
+    # batter_home_runs market only. When retail prices the same player above
+    # +600, the retail price likely came from batter_home_runs_alternate (which
+    # covers different events — HR vs RHP, first 5 innings, etc.). Comparing
+    # cross-market produces false +EV. Log and exclude per CLAUDE.md rules.
+    if "sharp_anchor" in merged.columns:
+        bol_bad = (
+            (merged["sharp_anchor"] == "betonlineag") &
+            (merged["best_retail_odds"] > _BOL_MAX_RETAIL_ODDS)
+        )
+        n_bol_bad = int(bol_bad.sum())
+        if n_bol_bad:
+            _log_bol_excluded(merged[bol_bad])
+            print(
+                f"  [EV] Excluded {n_bol_bad} plays: BOL anchor "
+                f"+ retail odds > +{_BOL_MAX_RETAIL_ODDS} (alternate market guard)"
+            )
+            merged = merged[~bol_bad].copy()
 
     # Hard stop: over-only anchor cannot de-vig (no Under exists), so EV is
     # unreliable regardless of retail odds. Zero any Kelly that survived above.

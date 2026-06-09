@@ -23,7 +23,7 @@ from agents.odds_scraper import extract_retail_odds
 from agents.parlay import format_parlays, generate_parlays
 from agents.pinnacle_scraper import extract_sharp_anchor
 from agents.scoring import compute_bet_score
-from agents.simulation import add_simulation
+from agents.simulation import add_simulation, validate_simulation
 from agents.validation import StepResult, append_quarantine, validate_ev_output, validate_raw_odds
 from dashboard.generator import generate_dashboard
 from run import fetch_odds, fetch_player_teams
@@ -96,11 +96,16 @@ def run_phase1() -> PipelineContext:
     ev_result = validate_ev_output(ctx.final_df)
     _log_result(ctx, "ev_validation", ev_result)
     ctx.final_df = ev_result.clean
-    ctx.final_df = compute_bet_score(ctx.final_df)
 
     player_teams = fetch_player_teams()
     ctx.final_df["team"] = ctx.final_df["player_name"].map(player_teams).fillna("")
+
+    # Simulation must run before scoring so sim_prob is available for the
+    # divergence dampener in compute_bet_score.
     ctx.final_df = add_simulation(ctx.final_df)
+    for w in validate_simulation(ctx.final_df):
+        print(f"  {w}")
+    ctx.final_df = compute_bet_score(ctx.final_df)
 
     # Step 5: CLV Log
     print("[Step 5/5] Logging open plays to CLV log...")
