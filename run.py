@@ -1,6 +1,7 @@
 import os
 from datetime import datetime, timezone
 
+import pandas as pd
 import requests
 from dotenv import load_dotenv
 
@@ -169,6 +170,12 @@ def main() -> None:
                 "the sharp line is the EV anchor, so nothing can be computed until it's up."
             )
             print("Re-run after ~2 PM ET (closer to first pitch is sharper).")
+        if args.no_browser:
+            from agents.discord_bot import post_status
+            post_status(
+                f"⚾ No HR lines yet — {missing} props not posted. "
+                f"Pipeline ran at {now.strftime('%H:%M UTC')}."
+            )
         return
 
     n_pin = int((anchor_df.get("sharp_anchor", "") == "pinnacle").sum()) if "sharp_anchor" in anchor_df.columns else len(anchor_df)
@@ -196,6 +203,14 @@ def main() -> None:
     # Compute bet quality score (0-100) — must run after simulation so sim_prob
     # is available for the divergence dampener in compute_bet_score.
     final_df = compute_bet_score(final_df)
+
+    # featured_bet: plays that meet the kelly + EV threshold for posting to Discord.
+    # Must be set here so post_picks can filter on it (log_open_plays computes it
+    # internally but does not write it back to final_df).
+    final_df["featured_bet"] = (
+        (pd.to_numeric(final_df["kelly_units"], errors="coerce").fillna(0) >= 0.5) &
+        (pd.to_numeric(final_df["ev_pct"], errors="coerce").fillna(0) >= 0.10)
+    )
 
     n_players = len(final_df)
     n_positive = int((final_df["ev_pct"] > 0).sum())
