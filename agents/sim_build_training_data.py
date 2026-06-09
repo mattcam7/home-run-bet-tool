@@ -34,6 +34,10 @@ BATTER_SPLITS_PATH = Path("data/batter_splits.parquet")
 PARK_FACTORS_PATH = Path("data/park_factors.json")
 CHECKPOINT_DIR = Path("data/sim_cache")
 
+LEAGUE_MEAN_GB_PCT = 0.44
+LEAGUE_MEAN_FB_PCT = 0.362
+LEAGUE_MEAN_HR_FB = 0.138
+
 _STATCAST_BASE_COLS = [
     "batter", "pitcher", "game_pk", "game_date",
     "home_team", "p_throws", "stand", "events",
@@ -178,6 +182,102 @@ def _fetch_batter_splits(sc: pd.DataFrame, season: int) -> pd.DataFrame:
     )
 
 
+def _compute_per_game_contact_stats(sc: pd.DataFrame) -> pd.DataFrame:
+    """
+    Aggregate pitch-level Statcast to per-(batter, game_pk) contact stats.
+    Returns: (player_id, game_pk, game_date, game_brl_pct, game_avg_ev)
+    """
+    rows = []
+    for (batter_id, game_pk, game_date), grp in sc.groupby(
+        ["batter", "game_pk", "game_date"]
+    ):
+        bbe_mask = grp["bb_type"].notna()
+        n_bbe = bbe_mask.sum()
+        if n_bbe == 0:
+            continue
+        bbe = grp[bbe_mask]
+        n_barrel = bbe["barrel"].fillna(0).sum() if "barrel" in bbe.columns else 0
+        avg_ev = (
+            float(bbe["launch_speed"].mean())
+            if "launch_speed" in bbe.columns and bbe["launch_speed"].notna().any()
+            else float("nan")
+        )
+        rows.append({
+            "player_id": int(batter_id),
+            "game_pk": int(game_pk),
+            "game_date": str(game_date),
+            "game_brl_pct": float(n_barrel / n_bbe) * 100 if n_bbe > 0 else float("nan"),
+            "game_avg_ev": avg_ev,
+        })
+    return pd.DataFrame(rows)
+
+
+def _compute_rolling_batter_features(contact_pg: pd.DataFrame) -> pd.DataFrame:
+    """
+    Given per-(player_id, game_pk, game_date) contact stats, compute rolling
+    10-game barrel% and avg EV using shift(1) to avoid data leakage.
+
+    Returns: (player_id, game_pk, rolling_brl_pct, rolling_avg_ev)
+    """
+    df = contact_pg.sort_values(["player_id", "game_date"]).copy()
+
+    for col, out_col in [
+        ("game_brl_pct", "rolling_brl_pct"),
+        ("game_avg_ev", "rolling_avg_ev"),
+    ]:
+        df[out_col] = df.groupby("player_id")[col].transform(
+            lambda x: x.shift(1).rolling(10, min_periods=5).mean()
+        )
+
+    return df[["player_id", "game_pk", "rolling_brl_pct", "rolling_avg_ev"]]
+
+
+def _compute_rolling_pitcher_features(sc: pd.DataFrame) -> pd.DataFrame:
+    """
+    Compute rolling 5-start HR/9 and GB% per pitcher from pitch-level Statcast.
+
+    A "start" is approximated as a pitcher-game appearance.
+    Uses shift(1) to prevent data leakage.
+
+    Returns: (pitcher, game_pk, rolling_pitcher_hr9, rolling_pitcher_gb_pct)
+    """
+    rows = []
+    for (pitcher_id, game_pk, game_date), grp in sc.groupby(
+        ["pitcher", "game_pk", "game_date"]
+    ):
+        n_pitches = len(grp)
+        bbe_mask = grp["bb_type"].notna()
+        n_bbe = bbe_mask.sum()
+        n_gb = (grp.loc[bbe_mask, "bb_type"] == "ground_ball").sum() if n_bbe > 0 else 0
+        n_hr = (grp["events"] == "home_run").sum()
+        ip_approx = n_pitches / 15.0
+        rows.append({
+            "pitcher": int(pitcher_id),
+            "game_pk": int(game_pk),
+            "game_date": str(game_date),
+            "n_pitches": n_pitches,
+            "game_hr9": float(n_hr / ip_approx * 9) if ip_approx > 0 else float("nan"),
+            "game_gb_pct": float(n_gb / n_bbe) if n_bbe > 0 else float("nan"),
+        })
+
+    if not rows:
+        return pd.DataFrame(
+            columns=["pitcher", "game_pk", "rolling_pitcher_hr9", "rolling_pitcher_gb_pct"]
+        )
+
+    pg = pd.DataFrame(rows).sort_values(["pitcher", "game_date"])
+
+    for col, out_col in [
+        ("game_hr9", "rolling_pitcher_hr9"),
+        ("game_gb_pct", "rolling_pitcher_gb_pct"),
+    ]:
+        pg[out_col] = pg.groupby("pitcher")[col].transform(
+            lambda x: x.shift(1).rolling(5, min_periods=3).mean()
+        )
+
+    return pg[["pitcher", "game_pk", "rolling_pitcher_hr9", "rolling_pitcher_gb_pct"]]
+
+
 def _build_season(season: int, park_factors: dict) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """
     Pull Statcast for `season`, aggregate to player-game level, join all features.
@@ -270,6 +370,76 @@ def _build_season(season: int, park_factors: dict) -> tuple[pd.DataFrame, pd.Dat
         return park_factors.get(normalized, park_factors.get(str(team_abbrev), 1.0))
 
     pg["park_factor"] = pg["home_team"].apply(_park_factor)
+
+    # Rolling batter features (shift-based, no leakage)
+    print(f"  [season {season}] Computing rolling batter features...")
+    contact_pg = _compute_per_game_contact_stats(sc)
+    if not contact_pg.empty:
+        rolling_batter = _compute_rolling_batter_features(contact_pg)
+        pg = pg.merge(
+            rolling_batter,
+            on=["player_id", "game_pk"],
+            how="left",
+        )
+
+    # Rolling pitcher features
+    print(f"  [season {season}] Computing rolling pitcher features...")
+    rolling_pitcher = _compute_rolling_pitcher_features(sc)
+    if not rolling_pitcher.empty:
+        rolling_pitcher_merge = rolling_pitcher.rename(columns={"pitcher": "opp_pitcher_id_int"})
+        pg["opp_pitcher_id_int"] = pg["opp_pitcher_id"].astype("Int64")
+        rolling_pitcher_merge["opp_pitcher_id_int"] = rolling_pitcher_merge["opp_pitcher_id_int"].astype("Int64")
+        pg = pg.merge(
+            rolling_pitcher_merge[["opp_pitcher_id_int", "game_pk", "rolling_pitcher_hr9", "rolling_pitcher_gb_pct"]],
+            on=["opp_pitcher_id_int", "game_pk"],
+            how="left",
+        )
+        pg = pg.drop(columns=["opp_pitcher_id_int"])
+
+    # Fill rolling feature fallbacks
+    if "rolling_brl_pct" not in pg.columns:
+        pg["rolling_brl_pct"] = pg["brl_percent"]
+    pg["rolling_brl_pct"] = pg["rolling_brl_pct"].fillna(pg["brl_percent"])
+    if "rolling_avg_ev" not in pg.columns:
+        pg["rolling_avg_ev"] = pg["avg_hit_speed"]
+    pg["rolling_avg_ev"] = pg["rolling_avg_ev"].fillna(pg["avg_hit_speed"])
+    if "rolling_pitcher_hr9" not in pg.columns:
+        pg["rolling_pitcher_hr9"] = PITCHER_LEAGUE_HR9
+    pg["rolling_pitcher_hr9"] = pg["rolling_pitcher_hr9"].fillna(PITCHER_LEAGUE_HR9)
+    if "rolling_pitcher_gb_pct" not in pg.columns:
+        pg["rolling_pitcher_gb_pct"] = LEAGUE_MEAN_GB_PCT
+    pg["rolling_pitcher_gb_pct"] = pg["rolling_pitcher_gb_pct"].fillna(LEAGUE_MEAN_GB_PCT)
+
+    # Batter split features (vs pitcher hand) — join splits_df computed earlier
+    print(f"  [season {season}] Joining batter split features...")
+    if not splits_df.empty:
+        splits_join = splits_df.rename(columns={
+            "brl_pct": "brl_pct_vs_hand",
+            "iso": "iso_vs_hand",
+            "fb_pct": "fb_pct_vs_hand",
+            "hr_fb": "hr_fb_vs_hand",
+            "vs_hand": "p_throws",
+        })
+        pg = pg.merge(
+            splits_join[["player_id", "p_throws", "brl_pct_vs_hand", "iso_vs_hand",
+                         "fb_pct_vs_hand", "hr_fb_vs_hand"]],
+            on=["player_id", "p_throws"],
+            how="left",
+        )
+    # Fill split fallbacks with season overall stats or league means
+    if "brl_pct_vs_hand" not in pg.columns:
+        pg["brl_pct_vs_hand"] = pg["brl_percent"]
+    pg["brl_pct_vs_hand"] = pg["brl_pct_vs_hand"].fillna(pg["brl_percent"])
+    if "iso_vs_hand" not in pg.columns:
+        pg["iso_vs_hand"] = pg["iso"]
+    pg["iso_vs_hand"] = pg["iso_vs_hand"].fillna(pg["iso"])
+    if "fb_pct_vs_hand" not in pg.columns:
+        pg["fb_pct_vs_hand"] = LEAGUE_MEAN_FB_PCT
+    pg["fb_pct_vs_hand"] = pg["fb_pct_vs_hand"].fillna(LEAGUE_MEAN_FB_PCT)
+    if "hr_fb_vs_hand" not in pg.columns:
+        pg["hr_fb_vs_hand"] = LEAGUE_MEAN_HR_FB
+    pg["hr_fb_vs_hand"] = pg["hr_fb_vs_hand"].fillna(LEAGUE_MEAN_HR_FB)
+
     pg["season"] = season
 
     # Drop rows with any missing model feature

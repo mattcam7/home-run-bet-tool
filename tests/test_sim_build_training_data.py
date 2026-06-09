@@ -76,3 +76,43 @@ def test_aggregate_lineup_slot_captured():
     assert "lineup_slot" in result.columns
     valid = result["lineup_slot"].dropna()
     assert (valid >= 1).all() and (valid <= 9).all()
+
+
+def test_compute_rolling_batter_features_no_data_leakage():
+    """Rolling stats for game N must not include game N itself (shift(1))."""
+    from agents.sim_build_training_data import _compute_rolling_batter_features
+    # One batter, 15 sequential games with known per-game barrel counts
+    rng = np.random.default_rng(7)
+    n_games = 15
+    contact = pd.DataFrame({
+        "player_id": [592450] * n_games,
+        "game_pk": list(range(1001, 1001 + n_games)),
+        "game_date": pd.date_range("2024-04-01", periods=n_games).astype(str).tolist(),
+        "game_brl_pct": rng.uniform(5, 15, n_games),
+        "game_avg_ev": rng.uniform(86, 94, n_games),
+    })
+    result = _compute_rolling_batter_features(contact)
+    # First game should have NaN rolling stats (no prior games)
+    first_row = result[result["game_pk"] == 1001]
+    assert first_row["rolling_brl_pct"].isna().all()
+    # Game 11+ should have rolling values (min 5 games in window)
+    game_11 = result[result["game_pk"] == 1011]
+    assert game_11["rolling_brl_pct"].notna().all()
+
+
+def test_compute_rolling_pitcher_features_gb_pct_in_range():
+    from agents.sim_build_training_data import _compute_rolling_pitcher_features
+    sc = _make_statcast_df(600)
+    result = _compute_rolling_pitcher_features(sc)
+    valid_gb = result["rolling_pitcher_gb_pct"].dropna()
+    assert (valid_gb >= 0.0).all() and (valid_gb <= 1.0).all()
+
+
+def test_compute_rolling_pitcher_features_returns_expected_columns():
+    from agents.sim_build_training_data import _compute_rolling_pitcher_features
+    sc = _make_statcast_df(600)
+    result = _compute_rolling_pitcher_features(sc)
+    assert "pitcher" in result.columns
+    assert "game_pk" in result.columns
+    assert "rolling_pitcher_hr9" in result.columns
+    assert "rolling_pitcher_gb_pct" in result.columns
