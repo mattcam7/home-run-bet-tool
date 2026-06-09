@@ -13,5 +13,4 @@ htmlcov/
 
 # Simulation agent cache (daily re-fetched, never committed)
 data/sim_cache/
-data/sim_model.pkl
 data/sim_unmatched.log
