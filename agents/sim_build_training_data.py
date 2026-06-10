@@ -8,7 +8,7 @@ Takes ~2 hours to pull Statcast for 2022-2025.
 Checkpoints by season — safe to re-run after interruption.
 
 Outputs:
-    data/sim_training_cache.parquet   — player-game rows with all 8 GAME_FEATURES + hit_hr
+    data/sim_training_cache.parquet   — player-game rows with all 13 GAME_FEATURES + hit_hr
     data/batter_bat_speed.parquet     — (player_id, season, Name, avg_bat_speed)
 """
 from __future__ import annotations
@@ -23,6 +23,7 @@ from agents.simulation import (
     PITCHER_LEAGUE_HR9,
     LEAGUE_MEAN_BAT_SPEED,
     GAME_FEATURES,
+    WEATHER_FEATURES,
     _normalize_team_abbrev,
     _reverse_statcast_name,
 )
@@ -443,8 +444,9 @@ def _build_season(season: int, park_factors: dict) -> tuple[pd.DataFrame, pd.Dat
 
     pg["season"] = season
 
-    # Drop rows with any missing model feature
-    pg = pg.dropna(subset=GAME_FEATURES + ["hit_hr"])
+    # Drop rows missing any non-weather model feature (weather is added in main())
+    _non_weather = [f for f in GAME_FEATURES if f not in WEATHER_FEATURES]
+    pg = pg.dropna(subset=_non_weather + ["hit_hr"])
 
     CHECKPOINT_DIR.mkdir(parents=True, exist_ok=True)
     tmp_pg = checkpoint.with_suffix(".tmp.parquet")
@@ -491,6 +493,11 @@ def main() -> None:
 
     training_df = pd.concat(all_pg, ignore_index=True)
     bat_speed_df = pd.concat(all_bs, ignore_index=True)
+
+    # Enrich with ballpark weather (batch fetch: ~30 API calls for all seasons)
+    from agents.weather import enrich_weather_features
+    print("\nFetching historical weather for all game-dates (~30 API calls)...")
+    training_df = enrich_weather_features(training_df)
 
     training_df.to_parquet(CACHE_PATH, index=False)
     bat_speed_df.to_parquet(BAT_SPEED_PATH, index=False)

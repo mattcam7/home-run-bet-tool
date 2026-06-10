@@ -19,9 +19,7 @@ from pathlib import Path
 import pandas as pd
 import requests
 from rapidfuzz import fuzz
-from sklearn.linear_model import LogisticRegression
-from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import StandardScaler
+from xgboost import XGBClassifier
 
 logger = logging.getLogger(__name__)
 
@@ -30,9 +28,15 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 BATTER_FEATURES = ["brl_percent", "avg_hit_speed", "ev95percent", "iso"]
+WEATHER_FEATURES = ["temp_f", "wind_toward_cf"]
 GAME_FEATURES = [
+    # Season-aggregate Statcast (v1 core)
     "brl_percent", "avg_hit_speed", "ev95percent", "iso",
     "bat_speed", "park_factor", "same_hand", "pitcher_hr9",
+    # Platoon splits vs pitcher hand
+    "brl_pct_vs_hand", "iso_vs_hand", "hr_fb_vs_hand",
+    # Ballpark weather
+    "temp_f", "wind_toward_cf",
 ]
 LEAGUE_MEAN_BAT_SPEED = 68.9   # mph — 2024+ Statcast average on all swings
 LEAGUE_MEAN_FB_PCT = 0.362     # MLB average fly ball rate 2022-2025
@@ -364,54 +368,60 @@ def _get_pitcher_stats_by_name(
 
 class HRClassifier:
     """
-    Logistic regression classifier predicting P(hit_hr=1) from 14 game-level features.
+    XGBoost classifier predicting P(hit_hr=1) from 13 game-level features.
     Trained on binary player-game Statcast outcomes (2022-2025).
 
-    Features (GAME_FEATURES) v2:
-        brl_pct_vs_hand    — barrel % vs pitcher hand (splits sidecar, falls back to season)
-        iso_vs_hand        — ISO vs pitcher hand (splits sidecar, falls back to season)
-        fb_pct_vs_hand     — fly ball % vs pitcher hand (splits sidecar, falls back to FG)
-        hr_fb_vs_hand      — HR/FB vs pitcher hand (splits sidecar, falls back to FG)
+    Features (GAME_FEATURES) v3:
+        brl_percent        — batter season barrel %
         avg_hit_speed      — batter season avg exit velocity
         ev95percent        — batter season hard-hit rate (EV >= 95 mph)
+        iso                — batter season isolated power
         bat_speed          — batter average bat speed (league mean when missing)
         park_factor        — home stadium HR factor (1.0 = neutral)
         same_hand          — 1 if same handedness (platoon disadvantage), 0 if opposite
-        rolling_brl_pct    — 30-day rolling barrel % (falls back to season)
-        rolling_avg_ev     — 30-day rolling avg exit velocity (falls back to season)
-        rolling_pitcher_hr9 — 30-day rolling pitcher HR/9 (falls back to season HR/9)
-        pitcher_gb_pct     — 30-day rolling pitcher ground ball % (falls back to league mean)
-        lineup_slot        — batting order slot 1-9 (defaults to 4.5 when not posted)
+        pitcher_hr9        — pitcher season HR/9 (league mean when missing)
+        brl_pct_vs_hand    — barrel % vs pitcher hand (splits sidecar, falls back to season)
+        iso_vs_hand        — ISO vs pitcher hand (splits sidecar, falls back to season)
+        hr_fb_vs_hand      — HR/FB vs pitcher hand (splits sidecar, falls back to league mean)
+        temp_f             — game-time temperature °F (72 for indoor parks)
+        wind_toward_cf     — wind component (mph) blowing toward CF; positive = tailwind
     """
 
     def __init__(self) -> None:
-        self._pipe: Pipeline | None = None
+        self._clf: XGBClassifier | None = None
 
     def fit(self, df: pd.DataFrame) -> None:
         train = df.dropna(subset=GAME_FEATURES + ["hit_hr"])
         X = train[GAME_FEATURES]
         y = train["hit_hr"].astype(int)
-        self._pipe = Pipeline([
-            ("scaler", StandardScaler()),
-            ("clf", LogisticRegression(C=1.0, max_iter=1000, solver="lbfgs")),
-        ])
-        self._pipe.fit(X, y)
+        self._clf = XGBClassifier(
+            n_estimators=400,
+            learning_rate=0.05,
+            max_depth=4,
+            subsample=0.8,
+            colsample_bytree=0.8,
+            reg_lambda=2.0,
+            eval_metric="logloss",
+            random_state=42,
+            verbosity=0,
+        )
+        self._clf.fit(X, y)
 
     def predict(self, features: dict) -> float:
         """Return P(hit_hr=1) as a float in (0, 1)."""
-        if self._pipe is None:
+        if self._clf is None:
             raise RuntimeError("HRClassifier is not fitted. Call fit() or load() first.")
         X = pd.DataFrame([features])[GAME_FEATURES].fillna(0.0)
-        return float(self._pipe.predict_proba(X)[0, 1])
+        return float(self._clf.predict_proba(X)[0, 1])
 
     def save(self, path: str | Path) -> None:
         Path(path).parent.mkdir(parents=True, exist_ok=True)
         with open(path, "wb") as f:
-            pickle.dump(self._pipe, f)
+            pickle.dump(self._clf, f)
 
     def load(self, path: str | Path) -> None:
         with open(path, "rb") as f:
-            self._pipe = pickle.load(f)
+            self._clf = pickle.load(f)
 
 
 def _get_or_train_model() -> HRClassifier:
@@ -884,6 +894,8 @@ def add_simulation(df: pd.DataFrame) -> pd.DataFrame:
         return df
 
     try:
+        from agents.weather import get_weather
+
         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
         # Season stats (daily cached)
@@ -902,8 +914,22 @@ def add_simulation(df: pd.DataFrame) -> pd.DataFrame:
         # Model
         model = _get_or_train_model()
 
-        # Bat speed sidecar
+        # Bat speed sidecar + batter splits
         bat_speed_lookup = _load_bat_speed_lookup()
+        splits_lookup = _load_batter_splits_lookup()
+
+        # Pre-fetch weather per unique game (home team) to avoid redundant API calls
+        _weather_cache: dict[str, dict] = {}
+
+        def _game_weather(game_str: str) -> dict:
+            home_name = game_str.split(" @ ", 1)[1].strip() if " @ " in game_str else ""
+            home_abbrev = TEAM_NAME_TO_ABBREV.get(home_name, "")
+            key = home_abbrev or "_unknown"
+            if key not in _weather_cache:
+                _weather_cache[key] = get_weather(home_abbrev, today) if home_abbrev else {
+                    "temp_f": 72.0, "wind_toward_cf": 0.0
+                }
+            return _weather_cache[key]
 
         sim_probs: list[float | None] = []
         for _, row in df.iterrows():
@@ -923,15 +949,30 @@ def add_simulation(df: pd.DataFrame) -> pd.DataFrame:
             )
             bat_speed = bat_speed_lookup.get(norm_name, LEAGUE_MEAN_BAT_SPEED)
 
+            # Platoon splits vs pitcher hand
+            hand = pitcher_hand or "R"
+            split = splits_lookup.get((norm_name, hand), {})
+            brl_pct_vs_hand = split.get("brl_pct") or float(stats["brl_percent"])
+            iso_vs_hand     = split.get("iso")     or float(stats["iso"])
+            hr_fb_vs_hand   = split.get("hr_fb")   or LEAGUE_MEAN_HR_FB
+
+            # Game-time weather
+            wx = _game_weather(row.get("game", ""))
+
             features = {
-                "brl_percent":   float(stats["brl_percent"]),
-                "avg_hit_speed": float(stats["avg_hit_speed"]),
-                "ev95percent":   float(stats["ev95percent"]),
-                "iso":           float(stats["iso"]),
-                "bat_speed":     float(bat_speed),
-                "park_factor":   float(park_factor),
-                "same_hand":     float(same_hand),
-                "pitcher_hr9":   float(pitcher_hr9),
+                "brl_percent":     float(stats["brl_percent"]),
+                "avg_hit_speed":   float(stats["avg_hit_speed"]),
+                "ev95percent":     float(stats["ev95percent"]),
+                "iso":             float(stats["iso"]),
+                "bat_speed":       float(bat_speed),
+                "park_factor":     float(park_factor),
+                "same_hand":       float(same_hand),
+                "pitcher_hr9":     float(pitcher_hr9),
+                "brl_pct_vs_hand": float(brl_pct_vs_hand),
+                "iso_vs_hand":     float(iso_vs_hand),
+                "hr_fb_vs_hand":   float(hr_fb_vs_hand),
+                "temp_f":          float(wx["temp_f"]),
+                "wind_toward_cf":  float(wx["wind_toward_cf"]),
             }
 
             sim_prob = model.predict(features)
