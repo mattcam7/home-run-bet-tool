@@ -37,6 +37,8 @@ GAME_FEATURES = [
     "brl_pct_vs_hand", "iso_vs_hand", "hr_fb_vs_hand",
     # Ballpark weather
     "temp_f", "wind_toward_cf",
+    # Recent-form rolling features (last ~30 calendar days)
+    "rolling_brl_pct", "rolling_avg_ev", "pitcher_gb_pct",
 ]
 LEAGUE_MEAN_BAT_SPEED = 68.9   # mph — 2024+ Statcast average on all swings
 LEAGUE_MEAN_FB_PCT = 0.362     # MLB average fly ball rate 2022-2025
@@ -368,10 +370,10 @@ def _get_pitcher_stats_by_name(
 
 class HRClassifier:
     """
-    XGBoost classifier predicting P(hit_hr=1) from 13 game-level features.
+    XGBoost classifier predicting P(hit_hr=1) from 16 game-level features.
     Trained on binary player-game Statcast outcomes (2022-2025).
 
-    Features (GAME_FEATURES) v3:
+    Features (GAME_FEATURES) v4:
         brl_percent        — batter season barrel %
         avg_hit_speed      — batter season avg exit velocity
         ev95percent        — batter season hard-hit rate (EV >= 95 mph)
@@ -385,6 +387,9 @@ class HRClassifier:
         hr_fb_vs_hand      — HR/FB vs pitcher hand (splits sidecar, falls back to league mean)
         temp_f             — game-time temperature °F (72 for indoor parks)
         wind_toward_cf     — wind component (mph) blowing toward CF; positive = tailwind
+        rolling_brl_pct    — batter barrel % over last ~30 calendar days (falls back to season)
+        rolling_avg_ev     — batter avg EV over last ~30 calendar days (falls back to season)
+        pitcher_gb_pct     — pitcher groundball rate over last ~30 days (falls back to league mean)
     """
 
     def __init__(self) -> None:
@@ -918,6 +923,9 @@ def add_simulation(df: pd.DataFrame) -> pd.DataFrame:
         bat_speed_lookup = _load_bat_speed_lookup()
         splits_lookup = _load_batter_splits_lookup()
 
+        # Rolling recent-form stats (daily cached; first call of day pulls ~30-day Statcast)
+        batter_rolling, pitcher_rolling_by_id = _fetch_rolling_window()
+
         # Pre-fetch weather per unique game (home team) to avoid redundant API calls
         _weather_cache: dict[str, dict] = {}
 
@@ -959,6 +967,15 @@ def add_simulation(df: pd.DataFrame) -> pd.DataFrame:
             # Game-time weather
             wx = _game_weather(row.get("game", ""))
 
+            # Rolling recent-form features
+            b_roll = batter_rolling.get(norm_name, {})
+            rolling_brl_pct = b_roll.get("rolling_brl_pct") or float(stats["brl_percent"])
+            rolling_avg_ev  = b_roll.get("rolling_avg_ev")  or float(stats["avg_hit_speed"])
+            starter_info = _get_opposing_starter_info(row, starters)
+            pitcher_id = starter_info.get("pitcher_id", 0) if starter_info else 0
+            p_roll = pitcher_rolling_by_id.get(pitcher_id, {}) if pitcher_id else {}
+            pitcher_gb_pct = p_roll.get("rolling_pitcher_gb_pct") or LEAGUE_MEAN_GB_PCT
+
             features = {
                 "brl_percent":     float(stats["brl_percent"]),
                 "avg_hit_speed":   float(stats["avg_hit_speed"]),
@@ -973,6 +990,9 @@ def add_simulation(df: pd.DataFrame) -> pd.DataFrame:
                 "hr_fb_vs_hand":   float(hr_fb_vs_hand),
                 "temp_f":          float(wx["temp_f"]),
                 "wind_toward_cf":  float(wx["wind_toward_cf"]),
+                "rolling_brl_pct": float(rolling_brl_pct),
+                "rolling_avg_ev":  float(rolling_avg_ev),
+                "pitcher_gb_pct":  float(pitcher_gb_pct),
             }
 
             sim_prob = model.predict(features)
