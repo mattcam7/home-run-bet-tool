@@ -68,6 +68,46 @@ def fetch_outcomes(game_date: str | None = None) -> pd.DataFrame:
     return pd.DataFrame(resp.data)
 
 
+def fetch_pending_clv() -> pd.DataFrame:
+    """Fetch CLV rows with no closing line yet (for cloud capture_closing runs)."""
+    resp = (
+        _client()
+        .table("clv_log")
+        .select("*")
+        .is_("closing_pinnacle_prob", "null")
+        .execute()
+    )
+    if not resp.data:
+        return pd.DataFrame()
+    return pd.DataFrame(resp.data)
+
+
+def update_clv_closing(rows: list[dict]) -> None:
+    """Write closing-line data back to Supabase for rows that were just captured."""
+    if not rows:
+        return
+    client = _client()
+    for row in rows:
+        update_data: dict = {}
+        if row.get("closing_pinnacle_prob") is not None:
+            update_data["closing_ts"] = row.get("closing_ts")
+            update_data["closing_pinnacle_odds"] = row.get("closing_pinnacle_odds")
+            update_data["closing_pinnacle_prob"] = row.get("closing_pinnacle_prob")
+            update_data["clv_pct"] = row.get("clv_pct")
+        if row.get("in_lineup") is not None:
+            update_data["in_lineup"] = row.get("in_lineup")
+        if not update_data:
+            continue
+        (
+            client.table("clv_log")
+            .update(update_data)
+            .eq("game_date", row["game_date"])
+            .eq("game", row["game"])
+            .eq("player_name", row["player_name"])
+            .execute()
+        )
+
+
 def mark_withdrawn(game_date: str, player_name: str) -> None:
     _client().table("clv_log").update({"withdrawn": True}).eq(
         "game_date", game_date

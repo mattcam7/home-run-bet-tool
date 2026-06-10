@@ -166,16 +166,32 @@ def capture_closing(
     Idempotent: only rows with no closing line yet and a first pitch in
     (now, now + window_min] are touched. Games already started are skipped —
     Pinnacle pulls props at first pitch, so no true closing line remains.
+
+    When running without a local CSV (e.g. GitHub Actions), reads pending rows
+    from Supabase and writes closing data back via Supabase UPDATE. The capture
+    window is automatically widened to 90 min in this mode to cover hourly runs.
     """
-    if not os.path.exists(path):
-        return
     fetch_odds_fn = fetch_odds_fn or _default_fetch_odds(api_key)
     lineup_fn = lineup_fn or fetch_confirmed_lineups
 
-    df = pd.read_csv(path).reindex(columns=COLUMNS)
-    # An all-empty CSV column reads back as float64, which rejects the string
-    # timestamp / bool lineup flag we write below. Object dtype holds mixed.
-    df[CLOSING_COLS] = df[CLOSING_COLS].astype(object)
+    _supabase_key = os.environ.get("SUPABASE_KEY")
+    _csv_exists = os.path.exists(path)
+    _supabase_mode = bool(_supabase_key) and not _csv_exists
+
+    if _csv_exists:
+        df = pd.read_csv(path).reindex(columns=COLUMNS)
+        # An all-empty CSV column reads back as float64, which rejects the string
+        # timestamp / bool lineup flag we write below. Object dtype holds mixed.
+        df[CLOSING_COLS] = df[CLOSING_COLS].astype(object)
+    elif _supabase_mode:
+        from agents.supabase_client import fetch_pending_clv
+        df = fetch_pending_clv().reindex(columns=COLUMNS)
+        df[CLOSING_COLS] = df[CLOSING_COLS].astype(object)
+        # Hourly GitHub Actions runs need a wider window than the 10-min local scheduler
+        window_min = max(window_min, 90)
+    else:
+        return
+
     pending = df[df["closing_pinnacle_prob"].isna()]
     if pending.empty:
         return
@@ -204,6 +220,7 @@ def capture_closing(
         lineup_names |= names
         lineups_posted = lineups_posted or posted
 
+    updated_indices: set[int] = set()
     for i, row in targets.iterrows():
         k = (row["game"], _norm(row["player_name"]))
         if k in pin_idx.index:
@@ -215,8 +232,21 @@ def capture_closing(
             df.at[i, "closing_pinnacle_odds"] = int(match["pinnacle_odds"])
             df.at[i, "closing_pinnacle_prob"] = cp
             df.at[i, "clv_pct"] = float(row["best_retail_decimal"]) * cp - 1
+            updated_indices.add(i)
         if lineups_posted:
             df.at[i, "in_lineup"] = _norm(row["player_name"]) in lineup_names
+            updated_indices.add(i)
         # lineups not posted yet -> leave in_lineup blank (guard)
 
-    df.to_csv(path, index=False)
+    if _csv_exists:
+        df.to_csv(path, index=False)
+
+    if _supabase_key and updated_indices:
+        try:
+            from agents.supabase_client import update_clv_closing
+            update_clv_closing(
+                df.loc[sorted(updated_indices)].reset_index(drop=True).to_dict("records")
+            )
+            print(f"  [clv_log] Supabase: wrote closing data for {len(updated_indices)} rows")
+        except Exception as e:
+            print(f"  [clv_log] Supabase closing write failed: {e}")

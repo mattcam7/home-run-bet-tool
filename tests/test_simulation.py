@@ -314,62 +314,66 @@ import numpy as np
 from agents.simulation import HRClassifier, GAME_FEATURES
 
 
-_BASE_FEATURES_V2 = {
-    "brl_pct_vs_hand": 10.0, "iso_vs_hand": 0.22,
-    "fb_pct_vs_hand": 0.36, "hr_fb_vs_hand": 0.14,
-    "avg_hit_speed": 90.0, "ev95percent": 44.0,
-    "bat_speed": 69.5, "park_factor": 1.0,
-    "same_hand": 0, "rolling_brl_pct": 10.0,
-    "rolling_avg_ev": 90.0, "rolling_pitcher_hr9": 1.30,
-    "pitcher_gb_pct": 0.44, "lineup_slot": 4.5,
+_BASE_FEATURES_V4 = {
+    "brl_percent": 6.0, "avg_hit_speed": 88.0, "ev95percent": 38.0, "iso": 0.12,
+    "bat_speed": 66.0, "park_factor": 1.0, "same_hand": 0, "pitcher_hr9": 1.30,
+    "brl_pct_vs_hand": 5.0, "iso_vs_hand": 0.12, "hr_fb_vs_hand": 0.08,
+    "temp_f": 72.0, "wind_toward_cf": 0.0,
+    "rolling_brl_pct": 6.0, "rolling_avg_ev": 88.0, "pitcher_gb_pct": 0.44,
 }
+# Keep old alias so any other references still resolve
+_BASE_FEATURES_V2 = _BASE_FEATURES_V4
 
 
 def _make_game_training_df(n: int = 300) -> pd.DataFrame:
-    """Synthetic game-level data: 14 features + binary hit_hr label."""
+    """Synthetic game-level data: 16 features (v4) + binary hit_hr label."""
     rng = np.random.default_rng(42)
-    brl_vs_hand = rng.uniform(4, 18, n)
-    iso_vs_hand = rng.uniform(0.10, 0.35, n)
-    fb_vs_hand = rng.uniform(0.25, 0.50, n)
-    hr_fb_vs_hand = rng.uniform(0.05, 0.30, n)
+    brl_pct = rng.uniform(4, 24, n)
     ev = rng.uniform(85, 95, n)
     hard = rng.uniform(30, 55, n)
+    iso = rng.uniform(0.10, 0.35, n)
     bat_speed = rng.uniform(64, 75, n)
     park_factor = rng.uniform(0.85, 1.20, n)
     same_hand = rng.integers(0, 2, n).astype(float)
+    pitcher_hr9 = rng.uniform(0.8, 2.0, n)
+    brl_vs_hand = rng.uniform(4, 18, n)
+    iso_vs_hand = rng.uniform(0.10, 0.35, n)
+    hr_fb_vs_hand = rng.uniform(0.05, 0.30, n)
+    temp_f = rng.uniform(55, 90, n)
+    wind = rng.uniform(-10, 10, n)
     rolling_brl = rng.uniform(4, 18, n)
     rolling_ev = rng.uniform(85, 95, n)
-    rolling_hr9 = rng.uniform(0.8, 2.0, n)
     gb_pct = rng.uniform(0.35, 0.55, n)
-    lineup_slot = rng.uniform(1, 9, n)
     logit = (
         -3.5
         + 0.06 * brl_vs_hand
         + 8.0 * iso_vs_hand
         + 0.03 * bat_speed
-        + 1.5 * (park_factor - 1.0)
-        + 0.4 * (rolling_hr9 - 1.30)
+        + 3.0 * (park_factor - 1.0)
+        + 0.4 * (pitcher_hr9 - 1.30)
         - 0.15 * same_hand
         + 2.0 * hr_fb_vs_hand
-        + 0.5 * fb_vs_hand
+        + 0.01 * wind
     )
     prob = 1.0 / (1.0 + np.exp(-logit))
     hit_hr = rng.binomial(1, prob).astype(float)
     return pd.DataFrame({
-        "brl_pct_vs_hand": brl_vs_hand,
-        "iso_vs_hand": iso_vs_hand,
-        "fb_pct_vs_hand": fb_vs_hand,
-        "hr_fb_vs_hand": hr_fb_vs_hand,
+        "brl_percent": brl_pct,
         "avg_hit_speed": ev,
         "ev95percent": hard,
+        "iso": iso,
         "bat_speed": bat_speed,
         "park_factor": park_factor,
         "same_hand": same_hand,
+        "pitcher_hr9": pitcher_hr9,
+        "brl_pct_vs_hand": brl_vs_hand,
+        "iso_vs_hand": iso_vs_hand,
+        "hr_fb_vs_hand": hr_fb_vs_hand,
+        "temp_f": temp_f,
+        "wind_toward_cf": wind,
         "rolling_brl_pct": rolling_brl,
         "rolling_avg_ev": rolling_ev,
-        "rolling_pitcher_hr9": rolling_hr9,
         "pitcher_gb_pct": gb_pct,
-        "lineup_slot": lineup_slot,
         "hit_hr": hit_hr,
     })
 
@@ -395,8 +399,8 @@ class TestHRClassifier:
         model = HRClassifier()
         model.fit(_make_game_training_df(500))
         base = {k: v for k, v in _BASE_FEATURES_V2.items() if k != "park_factor"}
-        neutral = model.predict({**base, "park_factor": 1.0})
-        coors = model.predict({**base, "park_factor": 1.20})
+        neutral = model.predict({**base, "park_factor": 0.80})
+        coors = model.predict({**base, "park_factor": 1.40})
         assert coors > neutral
 
     def test_save_and_load_round_trip(self, tmp_path):
@@ -414,17 +418,16 @@ class TestHRClassifier:
         with pytest.raises(RuntimeError, match="not fitted"):
             model.predict(_BASE_FEATURES_V2.copy())
 
-    def test_game_features_has_fourteen_entries(self):
-        assert len(GAME_FEATURES) == 14
+    def test_game_features_has_sixteen_entries(self):
+        assert len(GAME_FEATURES) == 16
         assert "brl_pct_vs_hand" in GAME_FEATURES
         assert "iso_vs_hand" in GAME_FEATURES
-        assert "fb_pct_vs_hand" in GAME_FEATURES
         assert "hr_fb_vs_hand" in GAME_FEATURES
         assert "rolling_brl_pct" in GAME_FEATURES
         assert "rolling_avg_ev" in GAME_FEATURES
-        assert "rolling_pitcher_hr9" in GAME_FEATURES
         assert "pitcher_gb_pct" in GAME_FEATURES
-        assert "lineup_slot" in GAME_FEATURES
+        assert "temp_f" in GAME_FEATURES
+        assert "wind_toward_cf" in GAME_FEATURES
         assert "park_factor" in GAME_FEATURES
         assert "same_hand" in GAME_FEATURES
         assert "bat_speed" in GAME_FEATURES
