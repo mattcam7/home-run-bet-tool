@@ -6,4 +6,5 @@ pytest
 supabase
 rapidfuzz
 scikit-learn
+xgboost
 pybaseball

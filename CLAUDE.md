@@ -12,6 +12,17 @@ We follow a deliberate validation cycle: **pinpoint major issues first → fix t
 
 Always tackle the hardest item first. Easy wins before hard problems creates false progress — the hard problem still exists and now there's less time to solve it.
 
+## Live Test After Every Change
+
+After implementing any code, framework, or process change — especially anything that touches GitHub Actions, scheduled workflows, or cloud infrastructure — immediately run a live end-to-end test to catch errors before assuming it works. Never declare a change "done" based on code review alone.
+
+**Required checks after any GitHub Actions change:**
+1. Trigger the workflow manually via `workflow_dispatch` and watch it complete
+2. Confirm the expected output appeared (Discord message, Supabase row, log entry)
+3. Only then consider the task complete
+
+This rule exists because local environments differ from CI (missing packages, different Python versions, no local files) and these gaps cause silent production failures.
+
 ## Always Match on IDs, Never Strings
 
 When joining, matching, or looking up players (or any entity) across data sources, always use numeric IDs rather than name strings. Name-string matching silently breaks on duplicate names, Unicode differences, and nicknames.
