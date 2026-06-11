@@ -1,3 +1,4 @@
+import math
 import os
 import pandas as pd
 
@@ -11,11 +12,23 @@ def _client():
     return create_client(url, key)
 
 
+def _sanitize(val):
+    """Convert NaN/inf to None so rows are JSON-serializable."""
+    if isinstance(val, float) and (math.isnan(val) or math.isinf(val)):
+        return None
+    return val
+
+
+def _sanitize_row(row: dict) -> dict:
+    return {k: _sanitize(v) for k, v in row.items()}
+
+
 def insert_clv_rows(rows: list[dict]) -> None:
     if not rows:
         return
     _client().table("clv_log").upsert(
-        rows, on_conflict="game_date,game,player_name"
+        [_sanitize_row(r) for r in rows],
+        on_conflict="game_date,game,player_name",
     ).execute()
 
 
