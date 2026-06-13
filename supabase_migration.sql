@@ -34,3 +34,25 @@ CREATE TABLE clv_log (
 -- Grant access to the anon/service role
 GRANT ALL ON clv_log TO anon, authenticated, service_role;
 GRANT USAGE, SELECT ON SEQUENCE clv_log_id_seq TO anon, authenticated, service_role;
+
+-- ---------------------------------------------------------------------------
+-- hr_outcomes: actual game results joined against CLV log picks
+-- ---------------------------------------------------------------------------
+DROP TABLE IF EXISTS hr_outcomes;
+
+CREATE TABLE hr_outcomes (
+    id              bigserial PRIMARY KEY,
+    game_date       date        NOT NULL,
+    player_name     text        NOT NULL,
+    team            text,
+    game            text,
+    game_pk         integer,
+    hit_hr          integer,
+    hrs_hit         integer     DEFAULT 0,
+    at_bats         integer     DEFAULT 0,
+    captured_ts     text,
+    UNIQUE (game_date, player_name)
+);
+
+GRANT ALL ON hr_outcomes TO anon, authenticated, service_role;
+GRANT USAGE, SELECT ON SEQUENCE hr_outcomes_id_seq TO anon, authenticated, service_role;

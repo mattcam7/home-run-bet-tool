@@ -38,7 +38,9 @@ REQUEST_DELAY = 0.25  # seconds between MLB API calls — be polite
 
 
 def _norm(name: str) -> str:
-    return str(name).strip().title()
+    import re
+    name = re.sub(r'\s*\(\d{4}\)', '', str(name)).strip()
+    return name.title()
 
 
 # ---------------------------------------------------------------------------
