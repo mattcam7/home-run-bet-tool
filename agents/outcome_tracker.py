@@ -322,7 +322,7 @@ def compute_roi_metrics(
     if supabase_key:
         try:
             from agents.supabase_client import fetch_clv_log, fetch_outcomes as _fetch_outcomes
-            clv = fetch_clv_log()
+            clv = fetch_clv_log(featured_only=featured_only)
             outcomes = _fetch_outcomes()
         except Exception:
             clv = pd.read_csv(clv_log_path) if Path(clv_log_path).exists() else pd.DataFrame()

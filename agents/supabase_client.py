@@ -33,7 +33,7 @@ def insert_clv_rows(rows: list[dict]) -> None:
 
 
 def fetch_clv_log(game_date: str | None = None, featured_only: bool = False) -> pd.DataFrame:
-    q = _client().table("clv_log").select("*")
+    q = _client().table("clv_log").select("*").limit(10000)
     if game_date:
         q = q.eq("game_date", game_date)
     if featured_only:
