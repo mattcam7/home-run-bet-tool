@@ -2,7 +2,8 @@ name: Daily Picks
 
 on:
   schedule:
-    - cron: '0 18 * * *'  # 2 PM ET (18:00 UTC during EDT, Apr-Oct)
+    - cron: '0 14 * * *'  # 10 AM ET (14:00 UTC during EDT) — catches afternoon games
+    - cron: '0 18 * * *'  # 2 PM ET (18:00 UTC during EDT) — main evening slate run
   workflow_dispatch:
 
 jobs:

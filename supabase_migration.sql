@@ -28,6 +28,7 @@ CREATE TABLE clv_log (
     clv_pct                 numeric,
     in_lineup               boolean,
     withdrawn               boolean DEFAULT false,
+    posted_to_discord       boolean DEFAULT false,
     UNIQUE (game_date, game, player_name)
 );
 

@@ -107,6 +107,9 @@ def post_picks(final_df: pd.DataFrame, now: datetime = None) -> None:
         picks_wh = _wh("DISCORD_PICKS_WEBHOOK")
         status_wh = _wh("DISCORD_STATUS_WEBHOOK")
 
+        today_str = now.astimezone(ET).strftime("%Y-%m-%d")
+        supabase_key = os.environ.get("SUPABASE_KEY", "")
+
         # Filter to featured bets, exclude games starting within 90 min
         if final_df.empty or "featured_bet" not in final_df.columns:
             featured = pd.DataFrame()
@@ -118,6 +121,18 @@ def post_picks(final_df: pd.DataFrame, now: datetime = None) -> None:
                         (ct.replace(tzinfo=timezone.utc) if ct.tzinfo is None else ct) - now
                     ).total_seconds() / 60 > 90
                 )]
+
+            # Exclude picks already posted to Discord earlier today (dedup across multi-run days)
+            already_posted: set = set()
+            if supabase_key and not featured.empty:
+                try:
+                    from agents.supabase_client import fetch_discord_posted_players
+                    already_posted = fetch_discord_posted_players(today_str)
+                except Exception:
+                    pass
+            if already_posted and "player_name" in featured.columns:
+                featured = featured[~featured["player_name"].isin(already_posted)]
+
             featured = featured.sort_values(
                 ["kelly_units", "ev_pct"], ascending=False
             )
@@ -157,6 +172,14 @@ def post_picks(final_df: pd.DataFrame, now: datetime = None) -> None:
             n_plays = len(featured)
 
         requests.post(picks_wh, json={"content": msg}, timeout=10).raise_for_status()
+
+        # Mark posted picks so subsequent same-day runs skip them
+        if not featured.empty and supabase_key:
+            try:
+                from agents.supabase_client import mark_picks_discord_posted
+                mark_picks_discord_posted(today_str, featured["player_name"].tolist())
+            except Exception:
+                pass
 
         if os.name == "nt":
             time_label = now.astimezone(ET).strftime("%I:%M %p ET").lstrip("0")

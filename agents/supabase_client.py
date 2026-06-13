@@ -121,6 +121,32 @@ def update_clv_closing(rows: list[dict]) -> None:
         )
 
 
+def fetch_discord_posted_players(game_date: str) -> set:
+    """Return set of player_names already posted to Discord for game_date."""
+    resp = (
+        _client()
+        .table("clv_log")
+        .select("player_name")
+        .eq("game_date", game_date)
+        .eq("posted_to_discord", True)
+        .execute()
+    )
+    if not resp.data:
+        return set()
+    return {row["player_name"] for row in resp.data}
+
+
+def mark_picks_discord_posted(game_date: str, player_names: list) -> None:
+    """Mark featured picks as posted to Discord so subsequent runs skip them."""
+    if not player_names:
+        return
+    client = _client()
+    for name in player_names:
+        client.table("clv_log").update({"posted_to_discord": True}).eq(
+            "game_date", game_date
+        ).eq("player_name", name).execute()
+
+
 def mark_withdrawn(game_date: str, player_name: str) -> None:
     _client().table("clv_log").update({"withdrawn": True}).eq(
         "game_date", game_date
