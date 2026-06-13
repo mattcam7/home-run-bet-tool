@@ -89,7 +89,14 @@ def run(
     if current_df.empty:
         return
 
-    current_idx = current_df.set_index("player_name") if "player_name" in current_df.columns else pd.DataFrame()
+    # Aggregate to best (highest) odds per player across all retail books
+    best_current = (
+        current_df.groupby("player_name")["american_odds"]
+        .max()
+        .reset_index()
+        .rename(columns={"american_odds": "best_retail_odds"})
+    )
+    current_idx = best_current.set_index("player_name")
 
     state = _load_state()
     today_state = state.get(today_str, {})
