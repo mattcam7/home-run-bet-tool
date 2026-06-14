@@ -16,6 +16,30 @@ logging.basicConfig(filename=str(_LOG), level=logging.ERROR,
 
 _GRADE_EMOJI = {"Strong": "🔴", "Solid": "🟡", "Marginal": "🟠"}
 
+_GRADE_COLORS = {
+    "Strong": 0xE74C3C,   # red
+    "Solid": 0xF1C40F,    # gold
+    "Marginal": 0xE67E22, # orange
+}
+
+_BOOK_DISPLAY = {
+    "draftkings": "DraftKings",
+    "betmgm": "BetMGM",
+    "fanduel": "FanDuel",
+    "fanatics": "Fanatics",
+    "williamhill_us": "Caesars",
+    "betrivers": "BetRivers",
+}
+
+_BOOK_URLS = {
+    "draftkings": "https://www.draftkings.com/betting/baseball/mlb",
+    "betmgm": "https://sports.betmgm.com/en/sports/baseball-23",
+    "fanduel": "https://sportsbook.fanduel.com/baseball",
+    "fanatics": "https://sportsbook.fanatics.com/leagues/baseball/mlb",
+    "williamhill_us": "https://www.caesars.com/sportsbook-and-casino/sport/baseball",
+    "betrivers": "https://www.betrivers.com/sports/baseball/",
+}
+
 
 def _wh(env_var: str) -> str:
     val = os.environ.get(env_var, "")
@@ -38,6 +62,38 @@ def _bet_by(commence_time, buffer_min: int = 30) -> str:
     bt = commence_time - timedelta(minutes=buffer_min)
     s = bt.astimezone(ET).strftime("%I:%M %p ET")
     return s.lstrip("0")
+
+
+def _build_pick_embed(r) -> dict:
+    grade = str(r.get("bet_grade", ""))
+    color = _GRADE_COLORS.get(grade, 0x95A5A6)
+    odds = int(r["best_retail_odds"])
+    book_key = str(r.get("best_retail_book", "")).lower()
+    book_display = _BOOK_DISPLAY.get(book_key, book_key.replace("_", " ").title())
+    book_url = _BOOK_URLS.get(book_key, "")
+    ev = float(r.get("ev_pct", 0)) * 100
+    kelly = float(r.get("kelly_units", 0))
+    stake = float(r.get("stake_usd", 0))
+    anchor = "Pinnacle" if str(r.get("anchor_quality", "")) == "pinnacle" else "BetOnline"
+    bet_by = _bet_by(r.get("commence_time"))
+    game = str(r.get("game", ""))
+    emoji = _GRADE_EMOJI.get(grade, "⚪")
+
+    embed: dict = {
+        "title": str(r["player_name"]),
+        "color": color,
+        "fields": [
+            {"name": "Book & Odds", "value": f"{book_display} {_odds_str(odds)}", "inline": True},
+            {"name": "Edge", "value": f"{ev:+.1f}% EV", "inline": True},
+            {"name": "Size", "value": f"{kelly:.1f}u · ${stake:.0f}", "inline": True},
+            {"name": "Anchor", "value": anchor, "inline": True},
+            {"name": "Bet By", "value": f"{bet_by} · {game}", "inline": True},
+        ],
+        "footer": {"text": f"{emoji} {grade} Grade"},
+    }
+    if book_url:
+        embed["url"] = book_url
+    return embed
 
 
 def _running_metrics() -> tuple:
@@ -144,34 +200,32 @@ def post_picks(final_df: pd.DataFrame, now: datetime = None) -> None:
             date_label = now.astimezone(ET).strftime("%a %b %-d")
 
         if featured.empty:
-            msg = f"⚾ HR Picks — {date_label}\n\nNo featured plays today."
+            requests.post(
+                picks_wh,
+                json={"content": f"⚾ HR Picks — {date_label}\n\nNo featured plays today."},
+                timeout=10,
+            ).raise_for_status()
             n_plays = 0
         else:
-            lines = [f"⚾ HR Picks — {date_label}\n"]
-            for _, r in featured.iterrows():
-                grade = str(r.get("bet_grade", ""))
-                emoji = _GRADE_EMOJI.get(grade, "⚪")
-                kelly = float(r.get("kelly_units", 0))
-                ev = float(r.get("ev_pct", 0)) * 100
-                anchor = "PIN" if str(r.get("anchor_quality", "")) == "pinnacle" else "BOL"
-                bet_by = _bet_by(r.get("commence_time"))
-                odds = int(r["best_retail_odds"])
-                line = (f"{emoji} {grade:<8} {r['player_name']} · "
-                        f"{r['best_retail_book']} {_odds_str(odds)} · "
-                        f"EV {ev:+.1f}% · {kelly:.1f}u · {anchor} · Bet by {bet_by}")
-                lines.append(line)
-
             roi, clv = _running_metrics()
             footer_parts = [f"{len(featured)} plays", "1u = $25"]
             if roi is not None:
                 footer_parts.append(f"Running ROI: {roi*100:+.1f}%")
             if clv is not None:
                 footer_parts.append(f"CLV: {clv*100:+.1f}%")
-            lines.append("\n" + " · ".join(footer_parts))
-            msg = "\n".join(lines)
+
+            pick_embeds = [_build_pick_embed(r) for _, r in featured.iterrows()]
+            stats_embed = {"description": " · ".join(footer_parts), "color": 0x2C2F33}
+            all_embeds = pick_embeds + [stats_embed]
             n_plays = len(featured)
 
-        requests.post(picks_wh, json={"content": msg}, timeout=10).raise_for_status()
+            # Discord allows max 10 embeds per message — send in batches
+            for i in range(0, len(all_embeds), 10):
+                batch = all_embeds[i:i + 10]
+                payload: dict = {"embeds": batch}
+                if i == 0:
+                    payload["content"] = f"⚾ **HR Picks — {date_label}**"
+                requests.post(picks_wh, json=payload, timeout=10).raise_for_status()
 
         # Mark posted picks so subsequent same-day runs skip them
         if not featured.empty and supabase_key:
